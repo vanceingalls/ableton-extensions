@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>pulse-waveform</title>
+<style>
+  html, body { margin: 0; background: #0b0b0e; overflow: hidden; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/**
+ * pulse-waveform — the MVP Clip2Video template.
+ *
+ * The one rule that makes sync exact: EVERYTHING drawn is a pure function of
+ * time in seconds. No requestAnimationFrame state, no physics accumulators,
+ * no Math.random() at draw time. HyperFrames drives its virtual clock and
+ * captures each frame; because we derive every pixel from `t`, the render is
+ * deterministic and note-accurate by construction.
+ *
+ * Wire-up: expose renderFrame(t) via whatever seek hook HyperFrames uses
+ * (see bottom of file). A rAF preview loop runs when opened in a normal
+ * browser so you can develop the template without rendering.
+ *
+ * Visual params the panel can map automation onto (video.mappings targets):
+ *   glow, zoom, hueShift, shake, gridDensity — read via visualParam(name, t).
+ */
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+let T = null;        // timeline.json
+let peaks = null;    // Float32Array of |audio| peaks, one per waveform column
+const WAVE_COLS = 96;
+
+// ---------- load data ----------
+async function init() {
+  T = await (await fetch('./timeline.json')).json();
+  canvas.width = T.video.width;
+  canvas.height = T.video.height;
+  peaks = await computePeaks('./' + T.audio.file, WAVE_COLS * 8);
+  if (!window.__hyperframes) previewLoop(); // dev preview only
+}
+
+async function computePeaks(url, buckets) {
+  const buf = await (await fetch(url)).arrayBuffer();
+  const audio = await new OfflineAudioContext(1, 1, 44100).decodeAudioData(buf);
+  const data = audio.getChannelData(0);
+  const out = new Float32Array(buckets);
+  const per = Math.floor(data.length / buckets);
+  for (let i = 0; i < buckets; i++) {
+    let m = 0;
+    for (let j = i * per; j < (i + 1) * per; j += 16) m = Math.max(m, Math.abs(data[j]));
+    out[i] = m;
+  }
+  return out;
+}
+
+// ---------- musical time helpers (all pure) ----------
+function secondsToBeats(t) {
+  // MVP: constant tempo (first tempoMap entry). Extend with ramp integration
+  // (mirror exporter.beatsToSeconds) when tempo automation lands.
+  return t * (T.timing.tempoMap[0].bpm / 60);
+}
+
+function laneValue(laneId, beat) {
+  const lane = T.automation[laneId];
+  if (!lane) return 0;
+  const pts = lane.points;
+  if (beat <= pts[0].beat) return norm(lane, pts[0].value);
+  for (let i = 0; i < pts.length - 1; i++) {
+    const a = pts[i], b = pts[i + 1];
+    if (beat < b.beat) {
+      if (a.curve === 'hold') return norm(lane, a.value);
+      let f = (beat - a.beat) / (b.beat - a.beat);
+      if (a.curve === 'sCurve') f = f * f * (3 - 2 * f);
+      return norm(lane, a.value + (b.value - a.value) * f);
+    }
+  }
+  return norm(lane, pts[pts.length - 1].value);
+}
+const norm = (lane, v) => (v - lane.min) / (lane.max - lane.min || 1);
+
+function visualParam(name, beat) {
+  let v = 0;
+  for (const m of (T.video.mappings || [])) {
+    if (m.target !== name) continue;
+    let x = laneValue(m.lane, beat);
+    if (m.invert) x = 1 - x;
+    const [lo, hi] = m.range || [0, 1];
+    v = Math.max(v, lo + (hi - lo) * x);
+  }
+  return v;
+}
+
+/** Energy of notes striking around this beat — drives the pulse. */
+function noteEnergy(beat) {
+  let e = 0;
+  for (const n of T.notes) {
+    const dt = beat - n.startBeat;
+    if (dt < 0) continue;
+    if (dt > 1.5) continue;
+    e += (n.velocity / 127) * Math.exp(-dt * 6); // exponential decay, pure in t
+  }
+  return Math.min(e, 2);
+}
+
+// ---------- the frame ----------
+function renderFrame(t) {
+  if (!T || !peaks) return;
+  const W = canvas.width, H = canvas.height;
+  const beat = secondsToBeats(t);
+  const accent = T.meta.clipColor || '#ff5722';
+  const energy = noteEnergy(beat);
+  const glow = 0.3 + 0.7 * Math.max(energy / 2, visualParam('glow', beat));
+  const zoom = 1 + 0.04 * energy + 0.1 * visualParam('zoom', beat);
+  const hue = 360 * visualParam('hueShift', beat);
+  const shake = 6 * visualParam('shake', beat) * Math.sin(t * 61.7); // deterministic
+
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = '#0b0b0e';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.translate(W / 2 + shake, H / 2);
+  ctx.scale(zoom, zoom);
+  ctx.translate(-W / 2, -H / 2);
+  if (hue) ctx.filter = `hue-rotate(${hue}deg)`;
+
+  // Beat grid: a ring that blooms on every downbeat.
+  const beatFrac = beat % 1;
+  const ringR = Math.min(W, H) * (0.18 + 0.22 * beatFrac);
+  ctx.globalAlpha = (1 - beatFrac) * 0.35;
+  ctx.strokeStyle = accent;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.arc(W / 2, H / 2, ringR, 0, Math.PI * 2);
+  ctx.stroke();
+
+  // Waveform: mirrored bars, window scrolling with playback position.
+  const progress = t / T.audio.durationSeconds;
+  const midY = H / 2, barW = W / WAVE_COLS;
+  ctx.globalAlpha = 1;
+  for (let i = 0; i < WAVE_COLS; i++) {
+    const p = peaks[Math.floor(((i / WAVE_COLS) * 0.25 + progress * 0.75) * (peaks.length - 1))] || 0;
+    const h = p * H * 0.28 * (1 + 0.5 * energy);
+    const played = i / WAVE_COLS < 0.25; // playhead sits at 25% of the window
+    ctx.fillStyle = played ? accent : 'rgba(214,214,214,0.35)';
+    ctx.shadowColor = accent;
+    ctx.shadowBlur = played ? 24 * glow : 0;
+    ctx.fillRect(i * barW + 1, midY - h / 2, barW - 2, Math.max(h, 2));
+  }
+  ctx.shadowBlur = 0;
+
+  // Note pulses: a dot per active note, x by pitch, size by velocity decay.
+  for (const n of T.notes) {
+    const dt = beat - n.startBeat;
+    if (dt < 0 || dt > 1) continue;
+    const x = W * (0.1 + 0.8 * ((n.pitch % 36) / 36));
+    const y = midY - H * 0.22 - dt * H * 0.1;
+    const r = (n.velocity / 127) * 14 * (1 - dt);
+    ctx.globalAlpha = 1 - dt;
+    ctx.fillStyle = accent;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+  ctx.filter = 'none';
+
+  // Title + current section marker.
+  ctx.fillStyle = '#d6d6d6';
+  ctx.font = `700 ${Math.round(H * 0.028)}px Helvetica, Arial, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(T.meta.title, W / 2, H * 0.9);
+  const section = [...T.markers].reverse().find(m => m.beat <= beat);
+  if (section) {
+    ctx.fillStyle = accent;
+    ctx.font = `400 ${Math.round(H * 0.018)}px Helvetica, Arial, sans-serif`;
+    ctx.fillText(section.label.toUpperCase(), W / 2, H * 0.93);
+  }
+}
+
+// ---------- clock wiring ----------
+// HyperFrames hook: the renderer seeks the virtual clock and captures frames.
+// Point its seek callback at renderFrame(seconds). Adjust the property name
+// to match the current HyperFrames template convention.
+window.renderFrame = renderFrame;
+
+// Dev preview in a normal browser (never used during deterministic render).
+function previewLoop() {
+  const start = performance.now();
+  (function tick() {
+    renderFrame((performance.now() - start) / 1000);
+    requestAnimationFrame(tick);
+  })();
+}
+
+init();
+</script>
+</body>
+</html>

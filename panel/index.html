@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Clip2Video</title>
+<style>
+  /* Design intent: this panel lives INSIDE Ableton Live, so it borrows Live's
+     vernacular — flat matte grays, dense small type, zero gloss. The only
+     color on screen is the clip's own color (set at runtime), which is how
+     Live itself communicates identity. Signature element: the mapping rows,
+     drawn like Live automation breakpoint lanes rather than generic selects. */
+  :root {
+    --bg: #202020;
+    --panel: #2a2a2a;
+    --line: #3a3a3a;
+    --text: #d6d6d6;
+    --dim: #8a8a8a;
+    --accent: #ff5722; /* replaced at runtime by the clip color */
+  }
+  * { box-sizing: border-box; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 11px/1.5 "Helvetica Neue", Arial, sans-serif;
+    padding: 12px; user-select: none;
+  }
+  h1 {
+    font-size: 11px; font-weight: 700; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 2px;
+  }
+  .clip-name {
+    font-size: 15px; font-weight: 700; margin-bottom: 14px;
+    border-left: 3px solid var(--accent); padding-left: 8px;
+  }
+  fieldset { border: 0; margin-bottom: 14px; }
+  legend { color: var(--dim); text-transform: uppercase; letter-spacing: .08em;
+           font-size: 10px; margin-bottom: 6px; }
+  .seg { display: flex; border: 1px solid var(--line); }
+  .seg button {
+    flex: 1; background: var(--panel); border: 0; color: var(--text);
+    padding: 6px 0; font: inherit; cursor: pointer;
+    border-right: 1px solid var(--line);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button[aria-pressed="true"] { background: var(--accent); color: #111; font-weight: 700; }
+  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .map-row {
+    display: grid; grid-template-columns: 1fr 16px 1fr; gap: 6px;
+    align-items: center; background: var(--panel); border: 1px solid var(--line);
+    padding: 6px; margin-bottom: 6px;
+  }
+  .map-row select {
+    width: 100%; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); font: inherit; padding: 4px;
+  }
+  .map-row .wire { text-align: center; color: var(--accent); font-weight: 700; }
+  .add-map {
+    width: 100%; background: none; border: 1px dashed var(--line);
+    color: var(--dim); padding: 6px; font: inherit; cursor: pointer;
+  }
+  .add-map:hover { color: var(--text); border-color: var(--dim); }
+
+  #render {
+    width: 100%; padding: 10px; margin-top: 4px; border: 0;
+    background: var(--accent); color: #111; font: inherit; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .08em; cursor: pointer;
+  }
+  #render:disabled { background: var(--line); color: var(--dim); cursor: default; }
+  #status { margin-top: 10px; color: var(--dim); min-height: 16px; }
+  #status.error { color: #e0685c; }
+  #status a { color: var(--accent); }
+</style>
+</head>
+<body>
+  <h1>Clip2Video</h1>
+  <div class="clip-name" id="clipName">—</div>
+
+  <fieldset>
+    <legend>Style</legend>
+    <div class="seg" id="styleSeg" role="group" aria-label="Visual style">
+      <button data-v="pulse-waveform" aria-pressed="true">Pulse</button>
+      <button data-v="falling-notes" aria-pressed="false">Notes</button>
+      <button data-v="typography" aria-pressed="false">Type</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Aspect</legend>
+    <div class="seg" id="aspectSeg" role="group" aria-label="Aspect ratio">
+      <button data-v="9:16" aria-pressed="true">9:16</button>
+      <button data-v="1:1" aria-pressed="false">1:1</button>
+      <button data-v="16:9" aria-pressed="false">16:9</button>
+    </div>
+  </fieldset>
+
+  <fieldset>
+    <legend>Automation → Visual</legend>
+    <div id="maps"></div>
+    <button class="add-map" id="addMap">+ map a lane</button>
+  </fieldset>
+
+  <button id="render">Render video</button>
+  <div id="status" role="status"></div>
+
+<script>
+  // Bridge to the Node side of the Extension. SDK: replace `parent.postMessage`
+  // with the real panel messaging API from the Extensions SDK.
+  const send = (msg) => parent.postMessage(msg, '*');
+
+  const state = {
+    style: 'pulse-waveform',
+    aspect: '9:16',
+    lanes: [],            // [{id, name}] from init
+    mappings: [],         // [{lane, target}]
+  };
+  const TARGETS = ['glow', 'zoom', 'hueShift', 'shake', 'gridDensity'];
+
+  function seg(el, key) {
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      el.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+      b.setAttribute('aria-pressed', 'true');
+      state[key] = b.dataset.v;
+    });
+  }
+  seg(document.getElementById('styleSeg'), 'style');
+  seg(document.getElementById('aspectSeg'), 'aspect');
+
+  document.getElementById('addMap').addEventListener('click', () => {
+    if (!state.lanes.length) return setStatus('No automation lanes found in this selection.');
+    state.mappings.push({ lane: state.lanes[0].id, target: TARGETS[0] });
+    drawMaps();
+  });
+
+  function drawMaps() {
+    const host = document.getElementById('maps');
+    host.innerHTML = '';
+    state.mappings.forEach((m, i) => {
+      const row = document.createElement('div');
+      row.className = 'map-row';
+      row.innerHTML =
+        `<select data-i="${i}" data-k="lane">` +
+          state.lanes.map(l => `<option value="${l.id}" ${l.id===m.lane?'selected':''}>${l.name}</option>`).join('') +
+        `</select><span class="wire">→</span>` +
+        `<select data-i="${i}" data-k="target">` +
+          TARGETS.map(t => `<option ${t===m.target?'selected':''}>${t}</option>`).join('') +
+        `</select>`;
+      host.appendChild(row);
+    });
+    host.querySelectorAll('select').forEach(s =>
+      s.addEventListener('change', () => {
+        state.mappings[+s.dataset.i][s.dataset.k] = s.value;
+      }));
+  }
+
+  document.getElementById('render').addEventListener('click', () => {
+    document.getElementById('render').disabled = true;
+    send({ type: 'render', request: {
+      aspect: state.aspect, fps: 30, style: state.style, mappings: state.mappings,
+    }});
+  });
+
+  function setStatus(text, isError) {
+    const s = document.getElementById('status');
+    s.textContent = text; s.className = isError ? 'error' : '';
+  }
+
+  // Messages from the Node side.
+  window.addEventListener('message', (e) => {
+    const msg = e.data || {};
+    if (msg.type === 'init') {
+      document.getElementById('clipName').textContent = msg.clipName;
+      if (msg.clipColor) document.documentElement.style.setProperty('--accent', msg.clipColor);
+      state.lanes = msg.lanes || [];
+    }
+    if (msg.type === 'status') setStatus(msg.text);
+    if (msg.type === 'needAudio') setStatus(msg.text, true), document.getElementById('render').disabled = false;
+    if (msg.type === 'error') setStatus(msg.text, true), document.getElementById('render').disabled = false;
+    if (msg.type === 'done') {
+      setStatus('Done. Saved to: ' + msg.file);
+      document.getElementById('render').disabled = false;
+    }
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+{
+  "formatVersion": "1.0.0",
+  "meta": {
+    "title": "Night Drive 03",
+    "artist": "demo",
+    "clipColor": "#4ecdc4",
+    "liveVersion": "12.4.5",
+    "extensionVersion": "0.1.0",
+    "exportedAt": "2026-07-05T12:00:00Z",
+    "sourceScope": "clip"
+  },
+  "timing": {
+    "durationBeats": 16,
+    "tempoMap": [{ "beat": 0, "bpm": 124 }],
+    "timeSignatures": [{ "beat": 0, "numerator": 4, "denominator": 4 }]
+  },
+  "audio": {
+    "file": "audio.wav",
+    "sampleRate": 44100,
+    "channels": 2,
+    "durationSeconds": 7.742,
+    "offsetBeats": 0
+  },
+  "notes": [
+    { "pitch": 36, "startBeat": 0,    "lengthBeats": 0.5, "velocity": 110 },
+    { "pitch": 36, "startBeat": 1,    "lengthBeats": 0.5, "velocity": 104 },
+    { "pitch": 38, "startBeat": 1.5,  "lengthBeats": 0.25, "velocity": 92 },
+    { "pitch": 36, "startBeat": 2,    "lengthBeats": 0.5, "velocity": 110 },
+    { "pitch": 42, "startBeat": 2.5,  "lengthBeats": 0.25, "velocity": 78 },
+    { "pitch": 36, "startBeat": 3,    "lengthBeats": 0.5, "velocity": 108 },
+    { "pitch": 60, "startBeat": 4,    "lengthBeats": 2,   "velocity": 96 },
+    { "pitch": 63, "startBeat": 4,    "lengthBeats": 2,   "velocity": 90 },
+    { "pitch": 67, "startBeat": 6,    "lengthBeats": 2,   "velocity": 88 },
+    { "pitch": 72, "startBeat": 8,    "lengthBeats": 4,   "velocity": 100 },
+    { "pitch": 36, "startBeat": 12,   "lengthBeats": 0.5, "velocity": 118 },
+    { "pitch": 36, "startBeat": 13,   "lengthBeats": 0.5, "velocity": 118 },
+    { "pitch": 36, "startBeat": 14,   "lengthBeats": 0.5, "velocity": 120 },
+    { "pitch": 36, "startBeat": 15,   "lengthBeats": 0.5, "velocity": 127 }
+  ],
+  "automation": {
+    "track1_auto_filter_frequency": {
+      "name": "Auto Filter > Frequency",
+      "unit": "Hz",
+      "min": 20,
+      "max": 20000,
+      "points": [
+        { "beat": 0,  "value": 400,   "curve": "linear" },
+        { "beat": 8,  "value": 12000, "curve": "sCurve" },
+        { "beat": 16, "value": 20000 }
+      ]
+    },
+    "track1_utility_gain": {
+      "name": "Utility > Gain",
+      "unit": "dB",
+      "min": -36,
+      "max": 6,
+      "points": [
+        { "beat": 0,  "value": 0, "curve": "hold" },
+        { "beat": 12, "value": 0, "curve": "linear" },
+        { "beat": 16, "value": 6 }
+      ]
+    }
+  },
+  "markers": [
+    { "beat": 0, "label": "Intro", "kind": "section" },
+    { "beat": 8, "label": "Build", "kind": "section" },
+    { "beat": 12, "label": "Drop", "kind": "section" }
+  ],
+  "tracks": [
+    { "id": "t1", "name": "Drums", "color": "#4ecdc4", "kind": "midi" }
+  ],
+  "video": {
+    "width": 1080,
+    "height": 1920,
+    "fps": 30,
+    "style": "pulse-waveform",
+    "mappings": [
+      { "lane": "track1_auto_filter_frequency", "target": "glow" },
+      { "lane": "track1_auto_filter_frequency", "target": "hueShift", "range": [0, 0.3] }
+    ]
+  }
+}
