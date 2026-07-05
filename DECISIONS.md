@@ -56,6 +56,16 @@ template manifests.
 Real credential handling is an open question for the user (§13) — see
 VERIFY 8 notes below.
 
+### 2026-07-05 — Early binary-level findings (pre-SDK, from Live 12.4.2)
+Strings in Live's `Extensions/AddOns/Ableton AddOns` helper binary (present
+and identical in the 12.4.2 build): `TExtensionsAddOnBackend`, "Extensions:
+Invalid package.json at", "Extensions: Error scanning",
+`InstallableExtensionsFolder`. So the extension host is a separate AddOns
+process that scans an installable-extensions folder for packages with a
+`package.json` — consistent with the announced `.ablx`/npm-style tooling.
+The 12.4.2 release binary itself shows no `.ablx` strings; the runtime
+presumably completes in 12.4.5+. Confirm all of this against the real SDK.
+
 ## VERIFY items (AGENT_INSTRUCTIONS §2) — all OPEN
 
 Blocked on the SDK bundle (Centercode beta download requires the user's
