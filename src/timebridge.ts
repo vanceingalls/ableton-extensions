@@ -114,7 +114,10 @@ export class TimeBridge {
   }
 
   private segmentAt(beat: number): number {
-    let lo = 0, hi = this.map.length - 2;
+    // May return the LAST point: past the map, segmentSeconds holds its bpm
+    // (map[i+1] === undefined). Capping at length-2 would extend the
+    // second-to-last segment's tempo — or worse, its ramp — past the end.
+    let lo = 0, hi = this.map.length - 1;
     if (hi < 0) return 0;
     while (lo < hi) {
       const mid = (lo + hi + 1) >> 1;

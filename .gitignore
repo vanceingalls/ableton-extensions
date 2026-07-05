@@ -1,0 +1,5 @@
+node_modules/
+dist/
+*.mp4
+templates/*/timeline.json
+templates/*/audio.wav
