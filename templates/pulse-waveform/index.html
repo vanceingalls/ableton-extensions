@@ -34,9 +34,10 @@
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
-let T = null;        // timeline.json
-let bridge = null;   // TimeBridge over T.timing.tempoMap (ramp-aware)
-let peaks = null;    // Float32Array of |audio| peaks, one per waveform column
+let T = null;          // timeline.json
+let bridge = null;     // TimeBridge over T.timing.tempoMap (ramp-aware)
+let peaks = null;      // Float32Array of |audio| peaks, one per waveform column
+let audioBuffer = null; // decoded audio, kept for the dev preview's playback
 const WAVE_COLS = 96;
 
 // ---------- load data ----------
@@ -52,6 +53,7 @@ async function init() {
 async function computePeaks(url, buckets) {
   const buf = await (await fetch(url)).arrayBuffer();
   const audio = await new OfflineAudioContext(1, 1, 44100).decodeAudioData(buf);
+  audioBuffer = audio;
   const data = audio.getChannelData(0);
   const out = new Float32Array(buckets);
   const per = Math.floor(data.length / buckets);
@@ -203,12 +205,37 @@ function renderFrame(t) {
 window.renderFrame = renderFrame;
 
 // Dev preview in a normal browser (never used during deterministic render).
+// Clocked by WebAudio, not performance.now(): frames are derived from the
+// same clock the audio plays on, so what you see IS the sync you'd judge —
+// the same clocking the M3 studio preview will use (§6). Click to play.
 function previewLoop() {
-  const start = performance.now();
-  (function tick() {
-    renderFrame((performance.now() - start) / 1000);
-    requestAnimationFrame(tick);
-  })();
+  renderFrame(0);
+  hint('▶ click to play');
+  let actx = null;
+  canvas.addEventListener('click', () => {
+    if (actx) { actx.close(); actx = null; }
+    actx = new AudioContext();
+    const src = actx.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(actx.destination);
+    const t0 = actx.currentTime + 0.05; // small scheduling headroom
+    src.start(t0);
+    (function tick() {
+      if (!actx) return;
+      const t = actx.currentTime - t0;
+      renderFrame(Math.max(0, t));
+      if (t >= T.audio.durationSeconds) { hint('▶ click to replay'); return; }
+      requestAnimationFrame(tick);
+    })();
+  });
+}
+
+function hint(text) {
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.fillStyle = 'rgba(214,214,214,0.8)';
+  ctx.font = `600 ${Math.round(canvas.height * 0.022)}px Helvetica, Arial, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(text, canvas.width / 2, canvas.height * 0.5);
 }
 
 init();
