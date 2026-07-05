@@ -32,12 +32,10 @@ export interface Timing {
   timeSignatures: TimeSignature[];
 }
 
-export interface TempoPoint {
-  beat: number;
-  bpm: number;
-  /** If true, tempo ramps linearly to the next point; otherwise holds. */
-  ramp?: boolean;
-}
+// Defined once in timebridge.ts (the time-math owner); re-exported here so
+// the contract surface stays complete. Shape mirrors the schema exactly.
+import type { TempoPoint, WarpMarker } from './timebridge';
+export type { TempoPoint, WarpMarker };
 
 export interface TimeSignature {
   beat: number;

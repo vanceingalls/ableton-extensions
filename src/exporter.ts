@@ -7,6 +7,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import type { Timeline, RenderRequest } from './types';
+import { TimeBridge } from './timebridge';
 import * as live from './liveAdapter';
 
 const FORMAT_VERSION = '1.0.0';
@@ -25,9 +26,14 @@ export interface ExportResult {
   workDir: string;
 }
 
-export async function exportSelection(req: RenderRequest): Promise<ExportResult> {
-  const sel = await live.getSelection();
-
+/**
+ * The caller resolves the selection once (run-once command model) and holds
+ * it while the studio is open, so refresh-from-Set re-exports re-use it.
+ */
+export async function exportSelection(
+  sel: live.SelectionContext,
+  req: RenderRequest,
+): Promise<ExportResult> {
   const [tempoMap, timeSignatures, notes, automation, markers, tracks] = await Promise.all([
     live.getTempoMap(),
     live.getTimeSignatures(),
@@ -41,7 +47,7 @@ export async function exportSelection(req: RenderRequest): Promise<ExportResult>
   await fs.mkdir(workDir, { recursive: true });
 
   const audioPath = await live.bounceAudio(sel, path.join(workDir, 'audio.wav'));
-  const durationSeconds = beatsToSeconds(sel.durationBeats, tempoMap);
+  const durationSeconds = new TimeBridge(tempoMap).beatsToSeconds(sel.durationBeats);
 
   const timeline: Timeline = {
     formatVersion: FORMAT_VERSION,
@@ -74,33 +80,6 @@ export async function exportSelection(req: RenderRequest): Promise<ExportResult>
   await fs.writeFile(timelinePath, JSON.stringify(timeline, null, 2), 'utf8');
 
   return { timeline, timelinePath, audioPath, workDir };
-}
-
-/**
- * Convert a beat position to seconds through the tempo map.
- * Handles held tempos and linear ramps between points.
- */
-export function beatsToSeconds(beat: number, tempoMap: Timeline['timing']['tempoMap']): number {
-  let seconds = 0;
-  for (let i = 0; i < tempoMap.length; i++) {
-    const cur = tempoMap[i];
-    const next = tempoMap[i + 1];
-    const segEnd = next ? Math.min(next.beat, beat) : beat;
-    if (segEnd <= cur.beat) break;
-    const segBeats = segEnd - cur.beat;
-
-    if (cur.ramp && next && next.bpm !== cur.bpm) {
-      // Linear BPM ramp: integrate 60/bpm(beats) over the segment.
-      const span = next.beat - cur.beat;
-      const b0 = cur.bpm;
-      const b1 = cur.bpm + (next.bpm - cur.bpm) * (segBeats / span);
-      seconds += (60 * segBeats * Math.log(b1 / b0)) / (b1 - b0);
-    } else {
-      seconds += (60 / cur.bpm) * segBeats;
-    }
-    if (!next || beat <= next.beat) break;
-  }
-  return seconds;
 }
 
 function tmpBase(): string {

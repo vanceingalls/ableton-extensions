@@ -1,82 +1,171 @@
 /**
  * main.ts — Clip2Video Extension entry point.
  *
- * Flow: right-click in Live → "Render Video…" → panel opens → user picks
- * style/aspect/mappings → export timeline + bounce audio → HyperFrames
- * renders → panel shows the finished MP4.
+ * Run-once command model (§2 confirmed, §5 debt 1): the user right-clicks a
+ * clip/track/the arrangement → "Open HyperFrames Studio…" → we resolve the
+ * selection, export the timeline, bounce audio, open the modal studio dialog,
+ * service its message bridge until it closes, and drive a progress dialog
+ * during cloud render. One invocation = one session; no persistent state.
  *
- * ⚠️ SDK: registration and panel APIs below are placeholders — swap in the
- * real Extensions SDK equivalents (see liveAdapter.ts header for the plan).
+ * ⚠️ SDK: registration below follows the confirmed canonical pattern
+ * (initialize / registerContextMenuAction / getObjectFromHandle) but the
+ * exact signatures must be checked against the SDK TypeDoc in Milestone 0.
+ * All SDK calls are quarantined in liveAdapter.ts — never import it here.
  */
 
 import * as path from 'node:path';
-import { exportSelection } from './exporter';
-import { renderLocal } from './render';
+import * as fs from 'node:fs/promises';
+import { exportSelection, type ExportResult } from './exporter';
+import { renderCloud } from './render';
+import {
+  STUDIO_PROTOCOL_VERSION,
+  type NodeToWebView,
+  type WebViewToNode,
+  type StyleInfo,
+  type RequestRenderMsg,
+} from './studioProtocol';
 import type { RenderRequest } from './types';
 import * as live from './liveAdapter';
 
-declare const ableton: any; // SDK entry point
-
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates');
+const STUDIO_HTML = path.join(__dirname, '..', 'panel', 'index.html');
 
-export function activate(): void {
-  // SDK: register a context-menu action available on clips, tracks, and the
-  // arrangement. The Extension then opens its panel UI (panel/index.html).
-  ableton.contextMenu.register({
-    label: 'Render Video…',
+/** Studio opens with these until the user changes them. */
+const DEFAULT_REQUEST: RenderRequest = {
+  aspect: '9:16',
+  fps: 30,
+  style: 'pulse-waveform',
+  mappings: [],
+};
+
+export async function activate(context: unknown): Promise<void> {
+  live.bindContext(context);
+  // SDK: initialize(activation, "1.0.0") + registerContextMenuAction — exact
+  // names/signatures per TypeDoc (M0). The action must appear on clips,
+  // tracks, and the arrangement.
+  const ctx = context as any;
+  ctx.commands.registerContextMenuAction({
+    id: 'clip2video.openStudio',
+    label: 'Open HyperFrames Studio…',
     appliesTo: ['clip', 'track', 'arrangement'],
-    onInvoke: openPanel,
+    onInvoke: (targetHandle: unknown) => runStudioSession(targetHandle),
   });
 }
 
-async function openPanel(): Promise<void> {
-  const sel = await live.getSelection();
-  const automation = await live.getAutomation(sel);
+/** One right-click → one studio session → done. */
+async function runStudioSession(targetHandle: unknown): Promise<void> {
+  const sel = await live.getSelection(targetHandle);
+  let result = await exportSelection(sel, DEFAULT_REQUEST);
+  const styles = await loadStyles();
 
-  // SDK: open the HTML panel and get a message bridge to it.
-  const panel = await ableton.ui.openPanel({
-    entry: path.join(__dirname, '..', 'panel', 'index.html'),
-    title: 'Clip2Video',
-    width: 380,
-    height: 560,
+  const dialog = await live.openStudioDialog(STUDIO_HTML, 'HyperFrames Studio');
+  const send = (msg: NodeToWebView) => dialog.postMessage(msg);
+
+  dialog.onMessage(async (raw) => {
+    const msg = raw as WebViewToNode;
+    switch (msg.type) {
+      case 'ready':
+        send({
+          type: 'init',
+          protocolVersion: STUDIO_PROTOCOL_VERSION,
+          timeline: result.timeline,
+          // VERIFY item 7: what URL form can the WebView actually load?
+          audioUrl: result.audioPath ? 'file://' + result.audioPath : '',
+          availableStyles: styles,
+        });
+        break;
+
+      case 'refreshFromSet':
+        // The signature interaction (§7): re-read the Set through the live
+        // handles and push a fresh timeline; the producer's loop is seconds.
+        result = await exportSelection(sel, DEFAULT_REQUEST);
+        send({ type: 'timelineUpdated', timeline: result.timeline });
+        break;
+
+      case 'requestRender':
+        await handleRender(msg, sel, send);
+        break;
+
+      case 'cancelRender':
+        // TODO(M2): thread an AbortSignal through renderCloud.
+        break;
+
+      case 'closeStudio':
+        dialog.close();
+        break;
+    }
   });
 
-  // Seed the panel with what we know: clip name/color for preview theming,
-  // available automation lanes for the mapping rows.
-  panel.postMessage({
-    type: 'init',
-    clipName: sel.clipName,
-    clipColor: sel.clipColor,
-    lanes: Object.entries(automation).map(([id, lane]) => ({ id, name: lane.name })),
-  });
+  await dialog.closed;
+}
 
-  panel.onMessage(async (msg: any) => {
-    if (msg.type !== 'render') return;
-    const req: RenderRequest = msg.request;
-
-    panel.postMessage({ type: 'status', text: 'Exporting timeline from Live…' });
-    const result = await exportSelection(req);
-
+async function handleRender(
+  msg: RequestRenderMsg,
+  sel: live.SelectionContext,
+  send: (m: NodeToWebView) => void,
+): Promise<void> {
+  try {
+    const req: RenderRequest = {
+      aspect: msg.aspect,
+      fps: msg.fps,
+      style: msg.style,
+      mappings: msg.mappings,
+      useCloud: true,
+    };
+    const result = await exportSelection(sel, req);
     if (!result.audioPath) {
-      // Beta fallback: audio bounce not available via SDK yet.
-      panel.postMessage({
-        type: 'needAudio',
-        text: 'Export audio manually (File > Export Audio/Video) and drop the WAV here.',
-        workDir: result.workDir,
+      send({
+        type: 'renderError',
+        message:
+          'Audio bounce is not available in this SDK build — export audio ' +
+          'manually (File > Export Audio/Video) and retry. (VERIFY item 1)',
       });
-      return; // panel re-sends 'render' with { audioFile } once the user drops it
+      return;
     }
 
-    panel.postMessage({ type: 'status', text: 'Rendering with HyperFrames…' });
+    const mp4 = await live.withProgress('Rendering with HyperFrames…', (report) =>
+      renderCloud(
+        {
+          workDir: result.workDir,
+          templateDir: path.join(TEMPLATES_DIR, msg.style),
+          timeline: result.timeline,
+        },
+        requireApiKey(),
+        (phase, pct) => {
+          report(pct, phase);
+          send({ type: 'renderProgress', phase, pct });
+        },
+      ),
+    );
+
+    // VERIFY item 7: deliver where the user can actually reach it.
+    send({ type: 'renderDone', deliveredAs: 'path', ref: mp4 });
+  } catch (err) {
+    send({ type: 'renderError', message: String((err as Error)?.message ?? err) });
+  }
+}
+
+/** Enumerate templates/<dir>/template.json manifests for the mapping UI. */
+async function loadStyles(): Promise<StyleInfo[]> {
+  const styles: StyleInfo[] = [];
+  for (const entry of await fs.readdir(TEMPLATES_DIR, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
     try {
-      const mp4 = await renderLocal({
-        workDir: result.workDir,
-        templateDir: path.join(TEMPLATES_DIR, req.style),
-        timeline: result.timeline,
-      });
-      panel.postMessage({ type: 'done', file: mp4 });
-    } catch (err: any) {
-      panel.postMessage({ type: 'error', text: String(err?.message ?? err) });
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(TEMPLATES_DIR, entry.name, 'template.json'), 'utf8'),
+      );
+      styles.push({ id: entry.name, manifest });
+    } catch {
+      // No manifest → not a selectable style (§8 makes the manifest mandatory).
     }
-  });
+  }
+  return styles;
+}
+
+function requireApiKey(): string {
+  // Ask the user (§13): where do HyperFrames Cloud credentials live —
+  // account link in the panel, env var, or per-render token?
+  const key = process.env.HYPERFRAMES_API_KEY;
+  if (!key) throw new Error('HyperFrames Cloud API key not configured.');
+  return key;
 }

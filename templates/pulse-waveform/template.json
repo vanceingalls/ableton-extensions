@@ -1,0 +1,12 @@
+{
+  "formatVersion": "1.0.0",
+  "name": "pulse-waveform",
+  "displayName": "Pulse Waveform",
+  "params": [
+    { "id": "glow", "label": "Glow", "description": "Bloom intensity on the played portion of the waveform" },
+    { "id": "zoom", "label": "Zoom", "description": "Scene scale pump around center" },
+    { "id": "hueShift", "label": "Hue Shift", "description": "Rotates the accent color hue (0..1 → 0..360°)" },
+    { "id": "shake", "label": "Shake", "description": "Deterministic horizontal camera shake" },
+    { "id": "gridDensity", "label": "Grid Density", "description": "Background beat-grid line count" }
+  ]
+}

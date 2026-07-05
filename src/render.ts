@@ -48,10 +48,24 @@ export async function renderLocal(job: RenderJob): Promise<string> {
   return outFile;
 }
 
-export async function renderCloud(job: RenderJob, apiKey: string): Promise<string> {
-  // Sketch: zip workDir, POST to the HyperFrames Cloud render endpoint,
-  // poll for completion, download MP4. Fill in against the real API.
-  throw new Error('Cloud rendering not wired up yet — use renderLocal.');
+export type RenderPhase = 'uploading' | 'rendering' | 'downloading';
+
+/**
+ * The shipped path (§8, cloud-first): zip {template dir, timeline.json,
+ * audio.wav}, POST to HyperFrames Cloud, poll, download the MP4, return its
+ * local path, reporting progress throughout.
+ *
+ * VERIFY item 8: endpoint, auth scheme, and job lifecycle are known to the
+ * user (they develop HyperFrames) — ask, do not guess.
+ */
+export async function renderCloud(
+  job: RenderJob,
+  apiKey: string,
+  onProgress?: (phase: RenderPhase, pct: number) => void,
+): Promise<string> {
+  throw new Error(
+    'HyperFrames Cloud not wired up yet — needs endpoint + auth from the HyperFrames team (VERIFY item 8).',
+  );
 }
 
 function run(cmd: string, args: string[], cwd: string): Promise<void> {

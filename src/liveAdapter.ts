@@ -29,6 +29,16 @@ import type {
 // import { getSelection, getSet } from '@ableton/extensions-sdk';
 declare const ableton: any; // SDK: injected/imported SDK entry point
 
+/**
+ * SDK: the real entry point is `activate(context: ExtensionContext)` with
+ * { application, commands, ui, resources, environment }. main.ts hands the
+ * context here so every SDK touch stays inside this file.
+ */
+let ctx: any = null;
+export function bindContext(extensionContext: unknown): void {
+  ctx = extensionContext;
+}
+
 export interface SelectionContext {
   scope: 'clip' | 'track' | 'arrangement';
   clipName: string;
@@ -39,9 +49,12 @@ export interface SelectionContext {
 }
 
 /** What did the user right-click? */
-export async function getSelection(): Promise<SelectionContext> {
-  // SDK: read the context-menu target the Extension was launched from.
-  const target = await ableton.selection.getTarget();
+export async function getSelection(targetHandle?: unknown): Promise<SelectionContext> {
+  // SDK: resolve the context-menu target the command was invoked on —
+  // canonical pattern is getObjectFromHandle(targetHandle) (§2 confirmed).
+  const target = targetHandle
+    ? await ctx.application.getObjectFromHandle(targetHandle)
+    : await ableton.selection.getTarget();
   return {
     scope: target.type, // 'clip' | 'track' | 'arrangement'
     clipName: target.name ?? 'Untitled',
@@ -143,6 +156,52 @@ export async function bounceAudio(sel: SelectionContext, outPath: string): Promi
     return outPath;
   } catch {
     return null; // trigger manual-export fallback
+  }
+}
+
+// ---- UI primitives (also SDK surface, so they live in the quarantine) ----
+
+export interface StudioDialog {
+  postMessage(msg: unknown): void;
+  onMessage(handler: (msg: unknown) => void): void;
+  /** Resolves when the user (or close()) dismisses the dialog. */
+  closed: Promise<void>;
+  close(): void;
+}
+
+/**
+ * Open the modal dialog hosting the studio WebView (§3, §7).
+ * SDK: modal-dialog example in the SDK bundle shows the real API; VERIFY
+ * item 5 covers sizing and modality.
+ */
+export async function openStudioDialog(entryHtmlPath: string, title: string): Promise<StudioDialog> {
+  const dlg = await ctx.ui.showModalDialog({ // SDK placeholder
+    entry: entryHtmlPath,
+    title,
+    width: 960,
+    height: 640,
+  });
+  return {
+    postMessage: (msg) => dlg.postMessage(msg),
+    onMessage: (handler) => dlg.onMessage(handler),
+    closed: dlg.closed,
+    close: () => dlg.close(),
+  };
+}
+
+/**
+ * Run `fn` under Live's progress dialog, forwarding its progress reports.
+ * SDK: progress-dialog example in the SDK bundle shows the real API.
+ */
+export async function withProgress<T>(
+  title: string,
+  fn: (report: (pct: number, text?: string) => void) => Promise<T>,
+): Promise<T> {
+  const progress = await ctx.ui.showProgressDialog({ title }); // SDK placeholder
+  try {
+    return await fn((pct, text) => progress.update(pct, text));
+  } finally {
+    progress.close();
   }
 }
 

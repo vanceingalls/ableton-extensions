@@ -10,6 +10,9 @@
 </head>
 <body>
 <canvas id="c"></canvas>
+<!-- The ONE time-conversion implementation, bundled from src/timebridge.ts
+     (npm run build:template-lib). Never reimplement beat/second math here. -->
+<script src="./timebridge.browser.js"></script>
 <script>
 /**
  * pulse-waveform — the MVP Clip2Video template.
@@ -32,12 +35,14 @@ const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 
 let T = null;        // timeline.json
+let bridge = null;   // TimeBridge over T.timing.tempoMap (ramp-aware)
 let peaks = null;    // Float32Array of |audio| peaks, one per waveform column
 const WAVE_COLS = 96;
 
 // ---------- load data ----------
 async function init() {
   T = await (await fetch('./timeline.json')).json();
+  bridge = new TimeBridgeLib.TimeBridge(T.timing.tempoMap);
   canvas.width = T.video.width;
   canvas.height = T.video.height;
   peaks = await computePeaks('./' + T.audio.file, WAVE_COLS * 8);
@@ -59,12 +64,6 @@ async function computePeaks(url, buckets) {
 }
 
 // ---------- musical time helpers (all pure) ----------
-function secondsToBeats(t) {
-  // MVP: constant tempo (first tempoMap entry). Extend with ramp integration
-  // (mirror exporter.beatsToSeconds) when tempo automation lands.
-  return t * (T.timing.tempoMap[0].bpm / 60);
-}
-
 function laneValue(laneId, beat) {
   const lane = T.automation[laneId];
   if (!lane) return 0;
@@ -111,17 +110,32 @@ function noteEnergy(beat) {
 function renderFrame(t) {
   if (!T || !peaks) return;
   const W = canvas.width, H = canvas.height;
-  const beat = secondsToBeats(t);
+  const beat = bridge.secondsToBeats(t);
   const accent = T.meta.clipColor || '#ff5722';
   const energy = noteEnergy(beat);
   const glow = 0.3 + 0.7 * Math.max(energy / 2, visualParam('glow', beat));
   const zoom = 1 + 0.04 * energy + 0.1 * visualParam('zoom', beat);
   const hue = 360 * visualParam('hueShift', beat);
   const shake = 6 * visualParam('shake', beat) * Math.sin(t * 61.7); // deterministic
+  const gridDensity = visualParam('gridDensity', beat);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#0b0b0e';
   ctx.fillRect(0, 0, W, H);
+
+  // Background beat grid: line count follows the gridDensity mapping.
+  if (gridDensity > 0.01) {
+    const lines = Math.round(2 + 14 * gridDensity);
+    ctx.strokeStyle = 'rgba(214,214,214,0.10)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let i = 1; i < lines; i++) {
+      const x = (W * i) / lines, y = (H * i) / lines;
+      ctx.moveTo(x, 0); ctx.lineTo(x, H);
+      ctx.moveTo(0, y); ctx.lineTo(W, y);
+    }
+    ctx.stroke();
+  }
 
   ctx.translate(W / 2 + shake, H / 2);
   ctx.scale(zoom, zoom);
