@@ -22,11 +22,12 @@ const banner = `(() => {
     } catch {}
   };
   pick('node:util', ['TextEncoder', 'TextDecoder']);
-  pick('node:buffer', ['Blob', 'File']);
+  pick('node:url', ['URL', 'URLSearchParams']);
+  pick('node:buffer', ['Blob', 'File', 'atob', 'btoa']);
   pick('node:stream/web', ['ReadableStream', 'WritableStream', 'TransformStream',
     'ByteLengthQueuingStrategy', 'CountQueuingStrategy']);
-  pick('node:perf_hooks', ['performance']);
-  pick('node:worker_threads', ['MessageChannel', 'MessagePort']);
+  pick('node:perf_hooks', ['performance', 'PerformanceObserver']);
+  pick('node:worker_threads', ['MessageChannel', 'MessagePort', 'BroadcastChannel']);
 })();`;
 
 await esbuild.build({
