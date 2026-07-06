@@ -1,11 +1,10 @@
 /**
- * main.ts — Clip2Video Extension entry point.
+ * main.ts — HyperFrames Feedback Extension entry point.
  *
- * Run-once command model (§2 confirmed, §5 debt 1): the user right-clicks a
- * clip/track/the arrangement → "Open HyperFrames Studio…" → we resolve the
- * selection, export the timeline, bounce audio, open the modal studio dialog,
- * service its message bridge until it closes, and drive a progress dialog
- * during cloud render. One invocation = one session; no persistent state.
+ * Run-once command model: the user right-clicks a clip/track → "Render Video…"
+ * or an arrangement selection → "Create Feedback Video from Selection…". We
+ * resolve the selection, gather data, open a modal dialog, and render (locally
+ * in dev, or HyperFrames Cloud with a key). One invocation = one session.
  *
  * ⚠️ SDK: registration below follows the confirmed canonical pattern
  * (initialize / registerContextMenuAction / getObjectFromHandle) but the
@@ -44,7 +43,7 @@ export async function activate(activation: unknown): Promise<void> {
     // to our clip/track/arrangement model (see liveAdapter.registerStudioAction).
     await live.registerStudioAction(
       'Render Video…',
-      'clip2video.openStudio',
+      'hyperframesFeedback.openStudio',
       (targetArg) => {
         console.log('command invoked, target:', JSON.stringify(targetArg, (_k, v) => (typeof v === 'bigint' ? String(v) : v)));
         void runStudioSession(targetArg).catch((e) => console.error('studio session failed:', e));
@@ -52,7 +51,7 @@ export async function activate(activation: unknown): Promise<void> {
     );
     await live.registerStudioAction(
       'Create Feedback Video from Selection…',
-      'clip2video.feedbackVideo',
+      'hyperframesFeedback.feedbackVideo',
       (targetArg) => {
         console.log('feedback command invoked');
         void runFeedbackSession(targetArg).catch((e) => console.error('feedback session failed:', e));

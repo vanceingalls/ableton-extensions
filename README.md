@@ -1,9 +1,10 @@
-# Clip2Video — HyperFrames inside Ableton Live
+# HyperFrames Feedback — HyperFrames inside Ableton Live
 
-Right-click any clip, track, or the arrangement in Live → **Open HyperFrames
-Studio…** → a modal studio previews a video composition built from your Set's
-own notes, tempo, colors, and structure → tweak → render a deterministic MP4
-whose visuals are frame-locked to the music, because timing comes from the Set
+Right-click a clip or track → **Render Video…**, or an arrangement selection →
+**Create Feedback Video from Selection…** (an AI review of what you selected).
+Renders build from your Set's own notes, tempo, colors, and structure into a
+deterministic MP4 whose visuals are frame-locked to the music, because timing
+comes from the Set
 itself (tempo, MIDI, automation, markers), not from audio analysis.
 
 ```

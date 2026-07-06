@@ -1,5 +1,5 @@
 {
-    "name": "Clip2Video",
+    "name": "HyperFrames Feedback",
     "author": "HyperFrames",
     "entry": "dist/extension.js",
     "version": "0.1.0",
