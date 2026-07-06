@@ -18,6 +18,7 @@ import {
   AudioClip,
   MidiClip,
   ClipSlot,
+  Scene,
   Track,
   AudioTrack,
   MidiTrack,
@@ -100,6 +101,19 @@ export async function getSelection(targetArg: unknown): Promise<SelectionContext
   }
 
   const obj = ctx.getObjectFromHandle(targetArg as Handle, DataModelObject<V>);
+  if (obj instanceof Scene) {
+    // Whole-project gesture: not tied to a clip. durationBeats 0 → callers
+    // that need a length compute it from all tracks (getProjectSummary does).
+    return {
+      scope: 'arrangement',
+      clipName: obj.name || 'Project',
+      clipColor: '#ff9d4d',
+      isMidi: false,
+      startBeat: 0,
+      durationBeats: 0,
+      tracks: [...ctx.application.song.tracks],
+    };
+  }
   if (obj instanceof Clip) return clipSelection(obj);
   if (obj instanceof ClipSlot) {
     if (!obj.clip) throw new Error('The clicked clip slot is empty.');
@@ -342,25 +356,38 @@ export function tempDirectory(): string | undefined {
 
 // ---------------------------------------------------------------- UI
 
+/** Scope presets for the two commands. Clip/track scopes make sense for a
+ *  clip-specific render; the feedback command is project-wide, so it only
+ *  appears on whole-project gestures (a Scene row, or a time selection across
+ *  the arrangement) — never on a single clip. */
+export const CLIP_SCOPES: ContextMenuScope<V>[] = [
+  'MidiClip',
+  'AudioClip',
+  'ClipSlot',
+  'ClipSlotSelection',
+  'MidiTrack',
+  'AudioTrack',
+  'MidiTrack.ArrangementSelection',
+  'AudioTrack.ArrangementSelection',
+];
+
+export const PROJECT_SCOPES: ContextMenuScope<V>[] = [
+  'Scene', // Session View: the row spanning every track — the whole-project gesture
+  'MidiTrack.ArrangementSelection',
+  'AudioTrack.ArrangementSelection',
+];
+
 /**
- * Register the studio command + context-menu action on every scope that maps
- * to our clip/track/arrangement model. Returns an unregister-all function.
+ * Register a command + context-menu action on the given scopes.
+ * Returns an unregister-all function.
  */
 export async function registerStudioAction(
   title: string,
   commandId: string,
   onInvoke: (targetArg: unknown) => void,
+  scopes: ContextMenuScope<V>[] = CLIP_SCOPES,
 ): Promise<() => Promise<void>> {
-  const SCOPES: ContextMenuScope<V>[] = [
-    'MidiClip',
-    'AudioClip',
-    'ClipSlot',
-    'ClipSlotSelection', // Session View: right-click on clip(s) in the grid
-    'MidiTrack',
-    'AudioTrack',
-    'MidiTrack.ArrangementSelection',
-    'AudioTrack.ArrangementSelection',
-  ];
+  const SCOPES = scopes;
   ctx.commands.registerCommand(commandId, (...args: unknown[]) => onInvoke(args[0]));
   const unregisters = await Promise.all(
     SCOPES.map(async (scope) => {

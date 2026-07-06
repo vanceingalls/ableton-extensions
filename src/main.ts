@@ -13,6 +13,7 @@
  * All SDK calls are quarantined in liveAdapter.ts — never import it here.
  */
 
+import './polyfill'; // MUST be first: installs fetch/Headers globals before the SDK loads
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { exportSelection } from './exporter';
@@ -50,12 +51,13 @@ export async function activate(activation: unknown): Promise<void> {
       },
     );
     await live.registerStudioAction(
-      'Create Feedback Video…',
+      'Create Feedback Video (whole project)…',
       'clip2video.feedbackVideo',
       (targetArg) => {
         console.log('feedback command invoked');
         void runFeedbackSession(targetArg).catch((e) => console.error('feedback session failed:', e));
       },
+      live.PROJECT_SCOPES, // Scene row + arrangement time-selection — not single clips
     );
     console.log('activate: context-menu actions registered on all scopes');
   } catch (e) {
