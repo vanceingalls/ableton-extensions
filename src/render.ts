@@ -14,6 +14,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { Timeline } from './types';
@@ -22,8 +23,7 @@ import { TEMPLATE_ASSETS } from './templateAssets.generated';
 export type RenderPhase = 'uploading' | 'rendering' | 'downloading';
 
 const API_BASE = process.env.HEYGEN_API_URL?.replace(/\/+$/, '') ?? 'https://api.heygen.com';
-/** Inline-base64 project limit; beyond this switch to the /v3/assets upload flow (M2+). */
-const MAX_INLINE_ZIP_BYTES = 40 * 1024 * 1024;
+const CONTENT_TYPE_ZIP = 'application/zip';
 
 export interface RenderJob {
   workDir: string; // contains timeline.json + audio.wav
@@ -107,16 +107,14 @@ export async function renderCloud(
   await run('zip', ['-r', '-q', zipPath, '.'], job.workDir);
   const zipBytes = await fs.readFile(zipPath);
   await fs.rm(zipPath, { force: true });
-  if (zipBytes.byteLength > MAX_INLINE_ZIP_BYTES) {
-    throw new Error(
-      `Bundle is ${Math.round(zipBytes.byteLength / 1e6)} MB — too large for inline upload; implement the /v3/assets flow.`,
-    );
-  }
+
+  // Upload the project zip via the CLI's proven direct-to-S3 flow:
+  // create-upload → PUT to presigned URL → complete → reference by asset_id.
+  const assetId = await uploadProjectZip(zipBytes, apiKey, signal);
+  onProgress?.('uploading', 100);
 
   const submit = await api('POST', '/v3/hyperframes/renders', apiKey, {
-    // Discriminated union (like the CLI's {type:'asset_id', asset_id}); the
-    // base64 form carries a nested {media_type, data} object.
-    project: { type: 'base64', base64: { media_type: 'application/zip', data: zipBytes.toString('base64') } },
+    project: { type: 'asset_id', asset_id: assetId },
     fps: job.timeline.video.fps,
     format: 'mp4',
     title: job.timeline.meta.title,
@@ -150,6 +148,49 @@ export async function renderCloud(
 }
 
 // ---------------------------------------------------------------- internals
+
+/**
+ * Upload the project zip via the direct-to-S3 flow the hyperframes CLI uses:
+ *   POST /v3/assets/direct-uploads {filename, content_type, size_bytes, checksum_sha256}
+ *     → {asset_id, upload_url, upload_headers}
+ *   PUT the bytes to upload_url (presigned S3 — NO api key on this request)
+ *   POST /v3/assets/{asset_id}/complete {checksum_sha256}  (retry 409)
+ * Returns the asset_id to reference in the render request.
+ */
+async function uploadProjectZip(zipBytes: Buffer, apiKey: string, signal?: AbortSignal): Promise<string> {
+  const checksum = createHash('sha256').update(zipBytes).digest('hex');
+  const init = await api('POST', '/v3/assets/direct-uploads', apiKey, {
+    filename: 'project.zip',
+    content_type: CONTENT_TYPE_ZIP,
+    size_bytes: zipBytes.byteLength,
+    checksum_sha256: checksum,
+  }, signal);
+  const d = init.data ?? init;
+  const uploadUrl: string | undefined = d.upload_url;
+  const assetId: string | undefined = d.asset_id;
+  if (!uploadUrl || !assetId) {
+    throw new Error(`create-upload returned no upload_url/asset_id: ${JSON.stringify(init).slice(0, 300)}`);
+  }
+
+  const headers: Record<string, string> = { 'content-type': CONTENT_TYPE_ZIP };
+  for (const [k, v] of Object.entries(d.upload_headers ?? {})) {
+    if (v != null) headers[k] = String(v);
+  }
+  const put = await fetch(uploadUrl, { method: 'PUT', headers, body: zipBytes, signal });
+  if (!put.ok) throw new Error(`Direct upload PUT failed: HTTP ${put.status} ${(await put.text().catch(() => '')).slice(0, 200)}`);
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await api('POST', `/v3/assets/${encodeURIComponent(assetId)}/complete`, apiKey, { checksum_sha256: checksum }, signal);
+      return assetId;
+    } catch (e) {
+      // 409 = not yet visible after the PUT; back off and retry.
+      if (attempt === 4 || !/HTTP 409/.test(String((e as Error)?.message))) throw e;
+      await sleep(500 * (attempt + 1), signal);
+    }
+  }
+  return assetId;
+}
 
 async function api(
   method: string,
