@@ -1,21 +1,28 @@
 /**
- * render.ts — hands the exported bundle to HyperFrames.
+ * render.ts — hands the exported bundle to HyperFrames (v0.7.36 conventions,
+ * verified against the CLI source + hyperframes.heygen.com docs; see
+ * research/sdk-typedoc-summary.md).
  *
- * Two paths:
- *   local: spawn the HyperFrames CLI against the chosen template folder.
- *   cloud: POST the bundle to HyperFrames Cloud (needs an API key).
+ * Bundle staging: template dir is copied over the work dir (which already
+ * holds timeline.json + audio.wav), plus timeline.js (inlined data so the
+ * composition needs no runtime fetch) and meta.json.
  *
- * ⚠️ Exact CLI flags / API routes: verify against the HyperFrames repo
- * (github.com/heygen-com/hyperframes) — you know this codebase better than
- * this comment does. The contract this wrapper relies on is only:
- *   input  = a template dir (HTML entry) + timeline.json + audio.wav
- *   output = a deterministic MP4 at `outFile`, audio muxed in.
+ * renderLocal — dev machines only: `npx hyperframes render` (needs Chrome +
+ *   FFmpeg). Not shipped in the extension.
+ * renderCloud — the shipped path: POST /v3/hyperframes/renders with the
+ *   zipped bundle inline (base64), poll, download the MP4.
  */
 
 import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { Timeline } from './types';
+
+export type RenderPhase = 'uploading' | 'rendering' | 'downloading';
+
+const API_BASE = process.env.HEYGEN_API_URL?.replace(/\/+$/, '') ?? 'https://api.heygen.com';
+/** Inline-base64 project limit; beyond this switch to the /v3/assets upload flow (M2+). */
+const MAX_INLINE_ZIP_BYTES = 40 * 1024 * 1024;
 
 export interface RenderJob {
   workDir: string; // contains timeline.json + audio.wav
@@ -24,48 +31,126 @@ export interface RenderJob {
   outFile?: string;
 }
 
+/** Copy the template over the work dir, inline the timeline as JS, and patch
+ *  the composition's data attributes (HyperFrames reads duration/size from
+ *  the HTML, not from flags). */
+export async function stageBundle(job: RenderJob): Promise<void> {
+  await fs.cp(job.templateDir, job.workDir, { recursive: true, force: true });
+
+  const indexPath = path.join(job.workDir, 'index.html');
+  const { width, height } = job.timeline.video;
+  const durationSeconds = job.timeline.audio.durationSeconds;
+  const html = (await fs.readFile(indexPath, 'utf8'))
+    .replace(/data-duration="[^"]*"/, `data-duration="${durationSeconds.toFixed(3)}"`)
+    .replace(/data-width="[^"]*"/, `data-width="${width}"`)
+    .replace(/data-height="[^"]*"/, `data-height="${height}"`);
+  await fs.writeFile(indexPath, html, 'utf8');
+
+  await fs.writeFile(
+    path.join(job.workDir, 'timeline.js'),
+    `window.TIMELINE = ${JSON.stringify(job.timeline)};\n`,
+    'utf8',
+  );
+  await fs.writeFile(
+    path.join(job.workDir, 'meta.json'),
+    JSON.stringify({ id: 'clip2video', name: job.timeline.meta.title }, null, 2),
+    'utf8',
+  );
+}
+
+/** Dev-machine render via the local CLI. Dimensions/duration/audio all come
+ *  from the composition's data attributes, not flags. */
 export async function renderLocal(job: RenderJob): Promise<string> {
   const outFile = job.outFile ?? path.join(job.workDir, 'output.mp4');
-  const { width, height, fps } = job.timeline.video;
-  const durationSec = job.timeline.audio.durationSeconds;
-
-  // Stage the template next to the data so relative fetches of
-  // ./timeline.json and ./audio.wav resolve inside the render page.
-  await copyDir(job.templateDir, job.workDir);
-
-  const args = [
-    'hyperframes', 'render',
-    path.join(job.workDir, 'index.html'),
-    '--width', String(width),
-    '--height', String(height),
-    '--fps', String(fps),
-    '--duration', durationSec.toFixed(3),
-    '--audio', path.join(job.workDir, 'audio.wav'),
-    '--out', outFile,
-  ];
-
-  await run('npx', args, job.workDir);
+  await stageBundle(job);
+  await run(
+    'npx',
+    ['-y', 'hyperframes', 'render', job.workDir, '--output', outFile, '--fps', String(job.timeline.video.fps), '--quiet'],
+    job.workDir,
+  );
   return outFile;
 }
 
-export type RenderPhase = 'uploading' | 'rendering' | 'downloading';
-
-/**
- * The shipped path (§8, cloud-first): zip {template dir, timeline.json,
- * audio.wav}, POST to HyperFrames Cloud, poll, download the MP4, return its
- * local path, reporting progress throughout.
- *
- * VERIFY item 8: endpoint, auth scheme, and job lifecycle are known to the
- * user (they develop HyperFrames) — ask, do not guess.
- */
 export async function renderCloud(
   job: RenderJob,
   apiKey: string,
   onProgress?: (phase: RenderPhase, pct: number) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
-  throw new Error(
-    'HyperFrames Cloud not wired up yet — needs endpoint + auth from the HyperFrames team (VERIFY item 8).',
-  );
+  const outFile = job.outFile ?? path.join(job.workDir, 'output.mp4');
+  await stageBundle(job);
+
+  // Zip the bundle (macOS ships /usr/bin/zip; Live extensions run on Node).
+  onProgress?.('uploading', 0);
+  const zipPath = path.join(path.dirname(job.workDir), `clip2video-${path.basename(job.workDir)}.zip`);
+  await run('zip', ['-r', '-q', zipPath, '.'], job.workDir);
+  const zipBytes = await fs.readFile(zipPath);
+  await fs.rm(zipPath, { force: true });
+  if (zipBytes.byteLength > MAX_INLINE_ZIP_BYTES) {
+    throw new Error(
+      `Bundle is ${Math.round(zipBytes.byteLength / 1e6)} MB — too large for inline upload; implement the /v3/assets flow.`,
+    );
+  }
+
+  const submit = await api('POST', '/v3/hyperframes/renders', apiKey, {
+    project: { type: 'base64', base64: zipBytes.toString('base64') },
+    fps: job.timeline.video.fps,
+    format: 'mp4',
+    title: job.timeline.meta.title,
+  }, signal);
+  const renderId: string | undefined = submit.render_id ?? submit.data?.render_id;
+  if (!renderId) throw new Error(`Cloud submit returned no render_id: ${JSON.stringify(submit).slice(0, 300)}`);
+  onProgress?.('uploading', 100);
+
+  // Poll until completed.
+  for (;;) {
+    signal?.throwIfAborted();
+    await sleep(5000, signal);
+    const st = await api('GET', `/v3/hyperframes/renders/${renderId}`, apiKey, undefined, signal);
+    const s = st.status ?? st.data?.status;
+    const pct = Number(st.progress ?? st.data?.progress ?? 0);
+    if (s === 'completed') {
+      const videoUrl: string | undefined = st.video_url ?? st.data?.video_url;
+      if (!videoUrl) throw new Error('Render completed but no video_url in response.');
+      onProgress?.('downloading', 0);
+      const res = await fetch(videoUrl, { signal });
+      if (!res.ok) throw new Error(`MP4 download failed: HTTP ${res.status}`);
+      await fs.writeFile(outFile, Buffer.from(await res.arrayBuffer()));
+      onProgress?.('downloading', 100);
+      return outFile;
+    }
+    if (s === 'failed' || s === 'error') {
+      throw new Error(`Cloud render failed: ${st.error ?? st.data?.error ?? 'unknown error'}`);
+    }
+    onProgress?.('rendering', Number.isFinite(pct) ? pct : 0);
+  }
+}
+
+// ---------------------------------------------------------------- internals
+
+async function api(
+  method: string,
+  apiPath: string,
+  apiKey: string,
+  body?: unknown,
+  signal?: AbortSignal,
+): Promise<any> {
+  const res = await fetch(API_BASE + apiPath, {
+    method,
+    headers: {
+      'x-api-key': apiKey,
+      ...(body ? { 'content-type': 'application/json' } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+    signal,
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`HyperFrames Cloud ${method} ${apiPath} → HTTP ${res.status}: ${text.slice(0, 300)}`);
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(`HyperFrames Cloud returned non-JSON: ${text.slice(0, 200)}`);
+  }
 }
 
 function run(cmd: string, args: string[], cwd: string): Promise<void> {
@@ -78,6 +163,12 @@ function run(cmd: string, args: string[], cwd: string): Promise<void> {
   });
 }
 
-async function copyDir(src: string, dest: string): Promise<void> {
-  await fs.cp(src, dest, { recursive: true, force: true });
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(resolve, ms);
+    signal?.addEventListener('abort', () => {
+      clearTimeout(t);
+      reject(new Error('cancelled'));
+    }, { once: true });
+  });
 }

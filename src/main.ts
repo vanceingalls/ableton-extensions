@@ -38,18 +38,15 @@ const DEFAULT_REQUEST: RenderRequest = {
   mappings: [],
 };
 
-export async function activate(context: unknown): Promise<void> {
-  live.bindContext(context);
-  // SDK: initialize(activation, "1.0.0") + registerContextMenuAction — exact
-  // names/signatures per TypeDoc (M0). The action must appear on clips,
-  // tracks, and the arrangement.
-  const ctx = context as any;
-  ctx.commands.registerContextMenuAction({
-    id: 'clip2video.openStudio',
-    label: 'Open HyperFrames Studio…',
-    appliesTo: ['clip', 'track', 'arrangement'],
-    onInvoke: (targetHandle: unknown) => runStudioSession(targetHandle),
-  });
+export async function activate(activation: unknown): Promise<void> {
+  live.bindActivation(activation);
+  // Registers the command + context-menu action on all six scopes that map
+  // to our clip/track/arrangement model (see liveAdapter.registerStudioAction).
+  await live.registerStudioAction(
+    'Open HyperFrames Studio…',
+    'clip2video.openStudio',
+    (targetArg) => void runStudioSession(targetArg),
+  );
 }
 
 /**
@@ -138,7 +135,7 @@ async function handleRender(
       return;
     }
 
-    const mp4 = await live.withProgress('Rendering with HyperFrames…', (report) =>
+    const mp4 = await live.withProgress('Rendering with HyperFrames…', (report, signal) =>
       renderCloud(
         {
           workDir: result.workDir,
@@ -150,11 +147,13 @@ async function handleRender(
           report(pct, phase);
           send({ type: 'renderProgress', phase, pct });
         },
+        signal, // user cancel in Live's progress dialog aborts the cloud job
       ),
     );
 
-    // VERIFY item 7: deliver where the user can actually reach it.
-    send({ type: 'renderDone', deliveredAs: 'path', ref: mp4 });
+    // VERIFY 7: import the MP4 into the Live project so the user owns it.
+    const delivered = await live.deliverIntoProject(mp4);
+    send({ type: 'renderDone', deliveredAs: 'imported', ref: delivered });
   } catch (err) {
     send({ type: 'renderError', message: String((err as Error)?.message ?? err) });
   }
@@ -178,9 +177,9 @@ async function loadStyles(): Promise<StyleInfo[]> {
 }
 
 function requireApiKey(): string {
-  // Ask the user (§13): where do HyperFrames Cloud credentials live —
-  // account link in the panel, env var, or per-render token?
-  const key = process.env.HYPERFRAMES_API_KEY;
-  if (!key) throw new Error('HyperFrames Cloud API key not configured.');
+  // Same resolution order as the hyperframes CLI. TODO(M3): read
+  // ~/.heygen/credentials too, and offer an account-link flow in the studio.
+  const key = process.env.HEYGEN_API_KEY ?? process.env.HYPERFRAMES_API_KEY;
+  if (!key) throw new Error('HyperFrames Cloud API key not configured (set HEYGEN_API_KEY).');
   return key;
 }

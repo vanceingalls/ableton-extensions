@@ -1,20 +1,33 @@
 /**
  * liveAdapter.ts — the ONLY file that talks to the Ableton Extensions SDK.
  *
- * ⚠️ The Extensions SDK is a brand-new public beta (June 2026) and its exact API
- * surface is evolving. Every call below marked `SDK:` is a placeholder for the
- * real SDK function — check the official repo/docs and the #extensions channel
- * on Ableton's Discord, then update ONLY this file. Everything else in the
- * project depends on the clean interfaces here, not on the SDK directly.
- *
- * Known-unknowns to verify against the real beta:
- *   1. Can we programmatically bounce/export audio for a clip or the master?
- *      If not (likely in early beta), we fall back to asking the user to
- *      File > Export Audio manually and drop the file on the panel.
- *   2. How automation lanes are enumerated and read (per-clip envelopes vs.
- *      arrangement automation), and whether curve shapes are exposed.
- *   3. Whether locators/markers are readable in Session-only scope.
+ * Written against @ableton-extensions/sdk 1.0.0-beta.0 (real types, installed
+ * from the SDK bundle tarball). Confirmed API reference:
+ * research/sdk-typedoc-summary.md. Known SDK gaps that shape this file:
+ *   - no automation/envelope read (getAutomation returns {})
+ *   - static tempo only (one-point tempo map)
+ *   - renderPreFxAudio is typed AudioTrack-only; whether it accepts
+ *     Song.mainTrack at runtime is the M1 experiment (see bounceAudio)
+ *   - no track color; no song-level time signature
  */
+
+import {
+  initialize,
+  DataModelObject,
+  Clip,
+  AudioClip,
+  MidiClip,
+  Track,
+  AudioTrack,
+  MidiTrack,
+  type ActivationContext,
+  type ExtensionContext,
+  type ContextMenuScope,
+  type Handle,
+  type ArrangementSelection,
+  type ClipSlotSelection,
+  type WarpMarker,
+} from '@ableton-extensions/sdk';
 
 import type {
   Note,
@@ -25,200 +38,295 @@ import type {
   TrackInfo,
 } from './types';
 
-// Replace with the real import from the Extensions SDK, e.g.:
-// import { getSelection, getSet } from '@ableton/extensions-sdk';
-declare const ableton: any; // SDK: injected/imported SDK entry point
+const API_VERSION = '1.0.0' as const;
+type V = typeof API_VERSION;
 
-/**
- * SDK: the real entry point is `activate(context: ExtensionContext)` with
- * { application, commands, ui, resources, environment }. main.ts hands the
- * context here so every SDK touch stays inside this file.
- */
-let ctx: any = null;
-export function bindContext(extensionContext: unknown): void {
-  ctx = extensionContext;
+let ctx: ExtensionContext<V>;
+
+/** Call once from the extension's activate() before anything else.
+ *  Takes unknown so main.ts never needs an SDK import (iron rule). */
+export function bindActivation(activation: unknown): void {
+  ctx = initialize(activation as ActivationContext, API_VERSION);
 }
+
+// ---------------------------------------------------------------- selection
 
 export interface SelectionContext {
   scope: 'clip' | 'track' | 'arrangement';
   clipName: string;
   clipColor: string; // "#rrggbb"
   isMidi: boolean;
-  startBeat: number; // absolute Set position of the exported region
+  /** Absolute Set position of the exported region (beats). 0 for session clips. */
+  startBeat: number;
   durationBeats: number;
+  /** Live handles held for the session (refresh-from-Set re-reads through these). */
+  clip?: Clip<V>;
+  tracks?: Track<V>[];
 }
 
-/** What did the user right-click? */
-export async function getSelection(targetHandle?: unknown): Promise<SelectionContext> {
-  // SDK: resolve the context-menu target the command was invoked on —
-  // canonical pattern is getObjectFromHandle(targetHandle) (§2 confirmed).
-  const target = targetHandle
-    ? await ctx.application.getObjectFromHandle(targetHandle)
-    : await ableton.selection.getTarget();
+/**
+ * Resolve the context-menu command argument. Per the SDK docs, arg is a
+ * Handle for object scopes (MidiClip/AudioClip/MidiTrack/AudioTrack…), an
+ * ArrangementSelection for *.ArrangementSelection scopes, or a
+ * ClipSlotSelection for ClipSlotSelection scope.
+ */
+export async function getSelection(targetArg: unknown): Promise<SelectionContext> {
+  if (isArrangementSelection(targetArg)) {
+    const start = targetArg.time_selection_start;
+    const end = targetArg.time_selection_end;
+    const tracks = targetArg.selected_lanes.map((h) =>
+      ctx.getObjectFromHandle(h, Track<V>),
+    );
+    return {
+      scope: 'arrangement',
+      clipName: tracks[0]?.name ?? 'Arrangement',
+      clipColor: '#ff5722', // tracks have no color in this SDK
+      isMidi: tracks.some((t) => t instanceof MidiTrack),
+      startBeat: start,
+      durationBeats: end - start,
+      tracks,
+    };
+  }
+
+  if (isClipSlotSelection(targetArg)) {
+    // MVP: take the first slot that holds a clip.
+    for (const h of targetArg.selected_clip_slots) {
+      const slot = ctx.getObjectFromHandle(h, DataModelObject<V>) as any;
+      if (slot.clip) return clipSelection(slot.clip as Clip<V>);
+    }
+    throw new Error('No clip in the selected clip slots.');
+  }
+
+  const obj = ctx.getObjectFromHandle(targetArg as Handle, DataModelObject<V>);
+  if (obj instanceof Clip) return clipSelection(obj);
+  if (obj instanceof Track) {
+    const clips = obj.arrangementClips;
+    const start = clips.length ? Math.min(...clips.map((c) => c.startTime)) : 0;
+    const end = clips.length ? Math.max(...clips.map((c) => c.endTime)) : 0;
+    return {
+      scope: 'track',
+      clipName: obj.name,
+      clipColor: clips.length ? colorToHex(clips[0].color) : '#ff5722',
+      isMidi: obj instanceof MidiTrack,
+      startBeat: start,
+      durationBeats: end - start,
+      tracks: [obj],
+    };
+  }
+  throw new Error(`Unsupported context-menu target: ${String(obj?.constructor?.name)}`);
+}
+
+function clipSelection(clip: Clip<V>): SelectionContext {
   return {
-    scope: target.type, // 'clip' | 'track' | 'arrangement'
-    clipName: target.name ?? 'Untitled',
-    clipColor: rgbToHex(target.color),
-    isMidi: target.isMidiClip ?? false,
-    startBeat: target.startTime ?? 0,
-    durationBeats: target.length ?? 0,
+    scope: 'clip',
+    clipName: clip.name,
+    clipColor: colorToHex(clip.color),
+    isMidi: clip instanceof MidiClip,
+    // Session clips: region is the clip content itself, anchored at beat 0.
+    startBeat: 0,
+    durationBeats: clip.duration,
+    clip,
   };
 }
 
+// ---------------------------------------------------------------- readers
+
 export async function getTempoMap(): Promise<TempoPoint[]> {
-  // VERIFY 3 RESOLVED (12.4.5b6 evidence): only static `song_get_tempo`
-  // exists — no tempo-automation read. One-point map; TimeBridge handles it.
-  const bpm = await ableton.song.getTempo(); // SDK: bindings.song_get_tempo
-  return [{ beat: 0, bpm }];
+  // Static tempo only in SDK 1.0.0-beta.0 (VERIFY 3) — one-point map.
+  return [{ beat: 0, bpm: ctx.application.song.tempo }];
 }
 
 export async function getTimeSignatures(): Promise<TimeSignature[]> {
-  const [numerator, denominator] = await ableton.song.getTimeSignature(); // SDK
-  return [{ beat: 0, numerator, denominator }];
+  // No song-level time signature in this SDK (scenes only). Default 4/4;
+  // revisit when the SDK exposes it.
+  return [{ beat: 0, numerator: 4, denominator: 4 }];
 }
 
 /** All notes in the selected region, normalized so the region starts at beat 0. */
 export async function getNotes(sel: SelectionContext): Promise<Note[]> {
   if (!sel.isMidi) return [];
-  // SDK: clip.getNotes() or equivalent. Live exposes pitch, start, duration,
-  // velocity, mute, probability per note in Live 12.
-  const raw = await ableton.selection.getClip().getNotes();
-  return raw
-    .filter((n: any) => !n.muted)
-    .map((n: any) => ({
-      pitch: n.pitch,
-      startBeat: n.startTime - 0, // clip-relative in most APIs; adjust if absolute
-      lengthBeats: n.duration,
-      velocity: n.velocity,
-      probability: n.probability,
-    }))
-    .sort((a: Note, b: Note) => a.startBeat - b.startBeat);
+  const collected: Note[] = [];
+
+  if (sel.clip instanceof MidiClip) {
+    collectClipNotes(sel.clip, 0, undefined, collected);
+  } else {
+    for (const track of sel.tracks ?? []) {
+      if (!(track instanceof MidiTrack)) continue;
+      for (const clip of track.arrangementClips) {
+        if (clip.endTime <= sel.startBeat) continue;
+        if (clip.startTime >= sel.startBeat + sel.durationBeats) continue;
+        if (!(clip instanceof MidiClip)) continue;
+        collectClipNotes(clip, clip.startTime - sel.startBeat, trackId(track), collected);
+      }
+    }
+  }
+  return collected.sort((a, b) => a.startBeat - b.startBeat);
 }
 
-/**
- * Enumerate readable automation lanes for the selection.
- * Returns breakpoints; if the SDK only exposes value-at-time queries, sample
- * at 1/16-note resolution instead and mark every point 'linear'.
- */
+function collectClipNotes(
+  clip: MidiClip<V>,
+  offsetBeats: number,
+  tid: string | undefined,
+  out: Note[],
+): void {
+  for (const n of clip.notes) {
+    if (n.muted) continue;
+    out.push({
+      pitch: n.pitch,
+      startBeat: n.startTime + offsetBeats, // NoteDescription times are in beats
+      lengthBeats: n.duration,
+      velocity: clampVelocity(n.velocity),
+      probability: n.probability,
+      ...(tid ? { trackId: tid } : {}),
+    });
+  }
+}
+
 export async function getAutomation(
-  sel: SelectionContext,
+  _sel: SelectionContext,
 ): Promise<Record<string, AutomationLane>> {
-  // VERIFY 2 RESOLVED (12.4.5b6 evidence): NO automation/envelope bindings
-  // exist in this beta — not even value-at-time. v1 ships without lane
-  // mappings; the timeline keeps its `automation` field (schema is
-  // forward-compatible) and the studio offers note-derived signals instead.
-  // Re-check each SDK release; restore a real implementation when Ableton
-  // exposes envelopes.
+  // VERIFY 2: no envelope API exists in SDK 1.0.0-beta.0. Schema keeps the
+  // field for forward compatibility; the studio offers note-derived signals.
   return {};
 }
 
 export async function getMarkers(sel: SelectionContext): Promise<Marker[]> {
   if (sel.scope === 'clip') return [];
-  // SDK: bindings.song_get_cue_points + cuepoint_get_time/get_name
-  // (12.4.5b6 evidence). NOTE: no cue-point CREATE binding exists — the
-  // M4 cue-sheet import needs a plan B if the SDK zip confirms that.
-  const cuePoints = await ableton.song.getCuePoints();
-  return cuePoints
-    .filter((c: any) => c.time >= sel.startBeat && c.time < sel.startBeat + sel.durationBeats)
-    .map((c: any) => ({ beat: c.time - sel.startBeat, label: c.name, kind: 'section' as const }));
-}
-
-/** Warped audio clips (VERIFY 6): bindings.audioclip_get_warp_markers exists
- *  in 12.4.5b6; exact marker field names TBD from the SDK TypeDoc. */
-export async function getWarpMarkers(clipHandle: unknown): Promise<import('./timebridge').WarpMarker[]> {
-  const raw = await ableton.audioClip.getWarpMarkers(clipHandle); // SDK
-  return raw.map((m: any) => ({ sampleTime: m.sampleTime, beatTime: m.beatTime }));
+  return ctx.application.song.cuePoints
+    .filter((c) => c.time >= sel.startBeat && c.time < sel.startBeat + sel.durationBeats)
+    .map((c) => ({ beat: c.time - sel.startBeat, label: c.name, kind: 'section' as const }));
 }
 
 export async function getTracks(): Promise<TrackInfo[]> {
-  const tracks = await ableton.song.getTracks(); // SDK
-  return tracks.map((t: any) => ({
-    id: String(t.id),
+  return ctx.application.song.tracks.map((t) => ({
+    id: trackId(t),
     name: t.name,
-    color: rgbToHex(t.color),
-    kind: t.kind,
+    kind: t instanceof MidiTrack ? ('midi' as const) : ('audio' as const),
+    // No track color in this SDK.
   }));
 }
 
+/** Warp markers of an audio clip — shape matches TimeBridge exactly (VERIFY 6). */
+export async function getWarpMarkers(clip: AudioClip<V>): Promise<WarpMarker[]> {
+  return clip.warpMarkers;
+}
+
+// ---------------------------------------------------------------- services
+
 /**
- * Bounce the selection to a WAV on disk.
- * VERIFY 1 evidence (12.4.5b6): the only render API is
- * `renderPreFxAudio(lane, {startTime, endTime}) → path` — per-lane, PRE-FX.
- * Hypothesis to test first in M1: the main track's input is the summed
- * post-FX output of all tracks (bindings.song_get_main_track exists), so
- * pre-FX-of-main ≈ the full mix minus main-bus processing.
- * Returns null if unavailable/failed → main.ts shows the manual-export
- * fallback (File > Export Audio/Video).
+ * Bounce the selection to a WAV at outPath, or return null → manual-export
+ * fallback. THE M1 EXPERIMENT: renderPreFxAudio is typed AudioTrack-only,
+ * but Song.mainTrack exists (typed Track) and its pre-FX input is the summed
+ * post-FX mix of every track. The cast below is intentional; if the runtime
+ * rejects main, fall back per-track or to manual export, and record the
+ * outcome in DECISIONS.md.
  */
 export async function bounceAudio(sel: SelectionContext, outPath: string): Promise<string | null> {
   try {
-    const mainTrack = await ableton.song.getMainTrack(); // SDK: song_get_main_track
-    const renderedPath: string = await ableton.files.renderPreFxAudio(mainTrack, {
-      startTime: sel.startBeat,
-      endTime: sel.startBeat + sel.durationBeats,
-    });
-    // The host chooses the output location; move it where the bundle expects.
-    if (renderedPath !== outPath) {
+    const main = ctx.application.song.mainTrack;
+    const rendered = await ctx.resources.renderPreFxAudio(
+      main as AudioTrack<V>,
+      sel.startBeat,
+      sel.startBeat + sel.durationBeats,
+    );
+    if (rendered !== outPath) {
       const fs = await import('node:fs/promises');
-      await fs.copyFile(renderedPath, outPath);
+      await fs.copyFile(rendered, outPath);
     }
     return outPath;
   } catch {
-    return null; // trigger manual-export fallback
+    return null;
   }
 }
 
-// ---- UI primitives (also SDK surface, so they live in the quarantine) ----
+/** Copy a finished file (the MP4) into the Live project; returns the imported path. */
+export async function deliverIntoProject(filePath: string): Promise<string> {
+  return ctx.resources.importIntoProject(filePath);
+}
+
+/** Per-extension scratch dir provided by Live (renders, bundles). */
+export function tempDirectory(): string | undefined {
+  return ctx.environment.tempDirectory;
+}
+
+// ---------------------------------------------------------------- UI
 
 /**
- * Show the modal studio WebView (12.4.5b6 evidence):
- * showModalDialog(url, width, height, onResult, onError) loads a URL and
- * calls back ONCE with a payload when the dialog closes. There is no
- * push-messaging API — live Node↔WebView traffic goes over the loopback
- * studio server (src/studioServer.ts); this call just opens the dialog and
- * resolves with the close payload when the user is done.
+ * Register the studio command + context-menu action on every scope that maps
+ * to our clip/track/arrangement model. Returns an unregister-all function.
+ */
+export async function registerStudioAction(
+  title: string,
+  commandId: string,
+  onInvoke: (targetArg: unknown) => void,
+): Promise<() => Promise<void>> {
+  const SCOPES: ContextMenuScope<V>[] = [
+    'MidiClip',
+    'AudioClip',
+    'MidiTrack',
+    'AudioTrack',
+    'MidiTrack.ArrangementSelection',
+    'AudioTrack.ArrangementSelection',
+  ];
+  ctx.commands.registerCommand(commandId, (...args: unknown[]) => onInvoke(args[0]));
+  const unregisters = await Promise.all(
+    SCOPES.map((scope) => ctx.ui.registerContextMenuAction(scope, title, commandId)),
+  );
+  return async () => {
+    await Promise.all(unregisters.map((u) => u()));
+  };
+}
+
+/**
+ * Open the modal studio WebView. `http://localhost` URLs are officially
+ * supported, so this receives the loopback studio-server URL. Resolves with
+ * the string the dialog posts via {method:'close_and_send', params:[str]}
+ * (window.webkit.messageHandlers.live on macOS / window.chrome.webview on
+ * Windows) when the user closes the studio.
  */
 export async function showStudioDialog(
   url: string,
   width: number,
   height: number,
-): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    ctx.ui.showModalDialog(url, width, height, resolve, (msg: string) => reject(new Error(msg))); // SDK
-  });
+): Promise<string> {
+  return ctx.ui.showModalDialog(url, width, height);
 }
 
 /**
- * Run `fn` under Live's progress dialog (12.4.5b6 evidence):
- * showProgressDialog({text, progress}, onShowDialog, onCancelled), with
- * dialog.update({text, progress}, cb) / dialog.close(cb). User cancellation
- * rejects with 'cancelled' — callers translate that to aborting the work.
+ * Run `fn` under Live's progress dialog. `report(pct, text?)` updates it
+ * (pct 0–100); the AbortSignal fires if the user cancels — pass it into
+ * cancellable work (cloud render). Dialog auto-closes when fn settles.
  */
 export async function withProgress<T>(
   text: string,
-  fn: (report: (pct: number, text?: string) => void) => Promise<T>,
+  fn: (report: (pct: number, text?: string) => void, signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    ctx.ui.showProgressDialog( // SDK
-      { text, progress: 0 },
-      (dialog: any) => {
-        fn((pct, newText) => dialog.update({ text: newText ?? text, progress: pct / 100 }, () => {}))
-          .then((value) => dialog.close(() => resolve(value)))
-          .catch((err) => dialog.close(() => reject(err)));
-      },
-      () => reject(new Error('cancelled')),
-    );
-  });
+  return (await ctx.ui.withinProgressDialog(
+    text,
+    { progress: 0 },
+    (update, signal) =>
+      fn((pct, newText) => void update(newText ?? text, pct), signal),
+  )) as T;
 }
 
-// ---- helpers ----
+// ---------------------------------------------------------------- helpers
 
-function rgbToHex(c: any): string {
-  if (typeof c === 'string') return c;
-  if (typeof c === 'number') return '#' + c.toString(16).padStart(6, '0');
-  return '#ff5722';
+function isArrangementSelection(x: unknown): x is ArrangementSelection {
+  return !!x && typeof x === 'object' && 'selected_lanes' in x;
 }
 
-function slug(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+function isClipSlotSelection(x: unknown): x is ClipSlotSelection {
+  return !!x && typeof x === 'object' && 'selected_clip_slots' in x;
+}
+
+function colorToHex(c: number): string {
+  return '#' + (c >>> 0).toString(16).padStart(6, '0').slice(-6);
+}
+
+function clampVelocity(v: number | undefined): number {
+  return Math.min(127, Math.max(1, Math.round(v ?? 100)));
+}
+
+function trackId(t: Track<V>): string {
+  return String(t.handle.id);
 }

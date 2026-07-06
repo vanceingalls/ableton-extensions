@@ -9,10 +9,21 @@
 </style>
 </head>
 <body>
-<canvas id="c"></canvas>
+<!-- HyperFrames composition root. data-duration/width/height are placeholders
+     patched by render.stageBundle() from the exported timeline. -->
+<div id="root" data-composition-id="main" data-start="0" data-duration="8"
+     data-width="1080" data-height="1920">
+  <canvas id="c"></canvas>
+  <!-- Muxed into the render by HyperFrames; inert in the dev preview (the
+       preview plays the same file via WebAudio for a seekable clock). -->
+  <audio class="clip" src="./audio.wav" data-start="0" data-track-index="0"></audio>
+</div>
 <!-- The ONE time-conversion implementation, bundled from src/timebridge.ts
      (npm run build:template-lib). Never reimplement beat/second math here. -->
 <script src="./timebridge.browser.js"></script>
+<!-- Inlined by stageBundle for the render (no runtime fetch needed); a 404
+     here in dev is harmless — init() falls back to fetching timeline.json. -->
+<script src="./timeline.js"></script>
 <script>
 /**
  * pulse-waveform — the MVP Clip2Video template.
@@ -42,12 +53,18 @@ const WAVE_COLS = 96;
 
 // ---------- load data ----------
 async function init() {
-  T = await (await fetch('./timeline.json')).json();
+  // Render path: timeline.js (inlined by stageBundle) sets window.TIMELINE.
+  // Dev path: fall back to fetching timeline.json next to this file.
+  T = window.TIMELINE ?? (await (await fetch('./timeline.json')).json());
   bridge = new TimeBridgeLib.TimeBridge(T.timing.tempoMap);
   canvas.width = T.video.width;
   canvas.height = T.video.height;
   peaks = await computePeaks('./' + T.audio.file, WAVE_COLS * 8);
-  if (!window.__hyperframes) previewLoop(); // dev preview only
+  if (!underRenderer()) previewLoop(); // dev preview only
+}
+
+function underRenderer() {
+  return !!(window.__hf || window.__hyperframes || window.__hyperframes_config);
 }
 
 async function computePeaks(url, buckets) {
@@ -199,9 +216,11 @@ function renderFrame(t) {
 }
 
 // ---------- clock wiring ----------
-// HyperFrames hook: the renderer seeks the virtual clock and captures frames.
-// Point its seek callback at renderFrame(seconds). Adjust the property name
-// to match the current HyperFrames template convention.
+// HyperFrames hook (verified v0.7.36): on every frame seek the renderer
+// dispatches a window "hf-seek" CustomEvent with detail.time in seconds.
+// Every pixel derives from that t — sync is exact by construction.
+window.addEventListener('hf-seek', (e) => renderFrame(e.detail.time));
+// Also exported directly for the in-Live studio preview loop (M3).
 window.renderFrame = renderFrame;
 
 // Dev preview in a normal browser (never used during deterministic render).
