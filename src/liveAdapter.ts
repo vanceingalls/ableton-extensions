@@ -30,6 +30,8 @@ import {
   type WarpMarker,
 } from '@ableton-extensions/sdk';
 
+import { spawn } from 'node:child_process';
+import * as fsp from 'node:fs/promises';
 import type {
   Note,
   AutomationLane,
@@ -331,8 +333,7 @@ export async function bounceAudio(sel: SelectionContext, outPath: string): Promi
       );
       console.log(`bounce: rendered via ${c.label} → ${rendered}`);
       if (rendered !== outPath) {
-        const fs = await import('node:fs/promises');
-        await fs.copyFile(rendered, outPath);
+        await fsp.copyFile(rendered, outPath);
       }
       return outPath;
     } catch (e) {
@@ -441,7 +442,6 @@ export async function withProgress<T>(
 
 /** Reveal a file in Finder (macOS) / Explorer, or open it with the default app. */
 export async function revealFile(filePath: string): Promise<void> {
-  const { spawn } = await import('node:child_process');
   const cmd = process.platform === 'darwin' ? ['open', ['-R', filePath]]
     : process.platform === 'win32' ? ['explorer', [`/select,${filePath}`]]
     : ['xdg-open', [filePath]];
@@ -449,7 +449,6 @@ export async function revealFile(filePath: string): Promise<void> {
 }
 
 export async function openFile(filePath: string): Promise<void> {
-  const { spawn } = await import('node:child_process');
   const bin = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
   spawn(bin, [filePath], { detached: true, stdio: 'ignore', shell: process.platform === 'win32' }).unref();
 }
