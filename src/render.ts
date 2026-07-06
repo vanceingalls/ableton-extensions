@@ -114,7 +114,9 @@ export async function renderCloud(
   }
 
   const submit = await api('POST', '/v3/hyperframes/renders', apiKey, {
-    project: { type: 'base64', base64: zipBytes.toString('base64') },
+    // Discriminated union (like the CLI's {type:'asset_id', asset_id}); the
+    // base64 form carries a nested {media_type, data} object.
+    project: { type: 'base64', base64: { media_type: 'application/zip', data: zipBytes.toString('base64') } },
     fps: job.timeline.video.fps,
     format: 'mp4',
     title: job.timeline.meta.title,
