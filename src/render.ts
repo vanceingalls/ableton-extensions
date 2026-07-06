@@ -171,7 +171,18 @@ async function api(
 
 function run(cmd: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { cwd, stdio: 'inherit' });
+    // Live's managed host doesn't inherit a dev shell PATH, so the local render
+    // (npx/hyperframes/ffmpeg) can't find its tools. Prepend the common
+    // user-local install dirs so local render works regardless of how the host
+    // was launched. (The shipped path is cloud render; this is the dev path.)
+    const extra = [
+      `${process.env.HOME}/.local/bin`,
+      `${process.env.HOME}/.local/node/node-v24.18.0-darwin-arm64/bin`,
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+    ].join(':');
+    const env = { ...process.env, PATH: `${extra}:${process.env.PATH ?? ''}` };
+    const child = spawn(cmd, args, { cwd, stdio: 'inherit', env });
     child.on('error', reject);
     child.on('exit', (code) =>
       code === 0 ? resolve() : reject(new Error(`${cmd} exited with ${code}`)),
