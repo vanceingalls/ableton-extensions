@@ -17,10 +17,10 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { exportSelection, type ExportResult } from './exporter';
 import { renderCloud } from './render';
+import { startStudioServer } from './studioServer';
 import {
   STUDIO_PROTOCOL_VERSION,
   type NodeToWebView,
-  type WebViewToNode,
   type StyleInfo,
   type RequestRenderMsg,
 } from './studioProtocol';
@@ -52,25 +52,33 @@ export async function activate(context: unknown): Promise<void> {
   });
 }
 
-/** One right-click → one studio session → done. */
+/**
+ * One right-click → one studio session → done.
+ *
+ * The dialog only loads a URL and reports back when it closes (VERIFY 5
+ * evidence), so all live traffic rides the loopback studio server: SSE for
+ * Node→WebView pushes, POST for WebView→Node messages. The server serves the
+ * studio HTML and the bounced audio, and lives exactly as long as the dialog.
+ */
 async function runStudioSession(targetHandle: unknown): Promise<void> {
   const sel = await live.getSelection(targetHandle);
   let result = await exportSelection(sel, DEFAULT_REQUEST);
   const styles = await loadStyles();
 
-  const dialog = await live.openStudioDialog(STUDIO_HTML, 'HyperFrames Studio');
-  const send = (msg: NodeToWebView) => dialog.postMessage(msg);
+  const server = await startStudioServer({
+    studioDir: path.dirname(STUDIO_HTML),
+    extraFiles: result.audioPath ? { 'audio.wav': result.audioPath } : {},
+  });
+  const send = (msg: NodeToWebView) => server.send(msg);
 
-  dialog.onMessage(async (raw) => {
-    const msg = raw as WebViewToNode;
+  server.onMessage(async (msg) => {
     switch (msg.type) {
       case 'ready':
         send({
           type: 'init',
           protocolVersion: STUDIO_PROTOCOL_VERSION,
           timeline: result.timeline,
-          // VERIFY item 7: what URL form can the WebView actually load?
-          audioUrl: result.audioPath ? 'file://' + result.audioPath : '',
+          audioUrl: result.audioPath ? './audio.wav' : '',
           availableStyles: styles,
         });
         break;
@@ -91,12 +99,19 @@ async function runStudioSession(targetHandle: unknown): Promise<void> {
         break;
 
       case 'closeStudio':
-        dialog.close();
+        // The WebView can't close its own dialog via the server; the studio
+        // UI instructs the user, and the SDK close payload ends the session.
         break;
     }
   });
 
-  await dialog.closed;
+  try {
+    // Blocks until the user closes the dialog (the close payload is unused
+    // for now; final settings travel over the server instead).
+    await live.showStudioDialog(server.url, 960, 640);
+  } finally {
+    await server.close();
+  }
 }
 
 async function handleRender(

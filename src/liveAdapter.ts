@@ -66,9 +66,9 @@ export async function getSelection(targetHandle?: unknown): Promise<SelectionCon
 }
 
 export async function getTempoMap(): Promise<TempoPoint[]> {
-  // SDK: read song tempo + tempo automation if exposed. Constant-tempo Sets
-  // return a single point, which is all the MVP needs.
-  const bpm = await ableton.song.getTempo();
+  // VERIFY 3 RESOLVED (12.4.5b6 evidence): only static `song_get_tempo`
+  // exists — no tempo-automation read. One-point map; TimeBridge handles it.
+  const bpm = await ableton.song.getTempo(); // SDK: bindings.song_get_tempo
   return [{ beat: 0, bpm }];
 }
 
@@ -103,31 +103,31 @@ export async function getNotes(sel: SelectionContext): Promise<Note[]> {
 export async function getAutomation(
   sel: SelectionContext,
 ): Promise<Record<string, AutomationLane>> {
-  const lanes: Record<string, AutomationLane> = {};
-  const envelopes = await ableton.selection.getEnvelopes(); // SDK
-  for (const env of envelopes) {
-    const id = slug(`${env.deviceName}.${env.parameterName}`);
-    lanes[id] = {
-      name: `${env.deviceName} > ${env.parameterName}`,
-      unit: env.unit,
-      min: env.min,
-      max: env.max,
-      points: env.breakpoints.map((p: any) => ({
-        beat: p.time,
-        value: p.value,
-        curve: 'linear',
-      })),
-    };
-  }
-  return lanes;
+  // VERIFY 2 RESOLVED (12.4.5b6 evidence): NO automation/envelope bindings
+  // exist in this beta — not even value-at-time. v1 ships without lane
+  // mappings; the timeline keeps its `automation` field (schema is
+  // forward-compatible) and the studio offers note-derived signals instead.
+  // Re-check each SDK release; restore a real implementation when Ableton
+  // exposes envelopes.
+  return {};
 }
 
 export async function getMarkers(sel: SelectionContext): Promise<Marker[]> {
   if (sel.scope === 'clip') return [];
-  const locators = await ableton.song.getLocators(); // SDK
-  return locators
-    .filter((l: any) => l.time >= sel.startBeat && l.time < sel.startBeat + sel.durationBeats)
-    .map((l: any) => ({ beat: l.time - sel.startBeat, label: l.name, kind: 'section' as const }));
+  // SDK: bindings.song_get_cue_points + cuepoint_get_time/get_name
+  // (12.4.5b6 evidence). NOTE: no cue-point CREATE binding exists — the
+  // M4 cue-sheet import needs a plan B if the SDK zip confirms that.
+  const cuePoints = await ableton.song.getCuePoints();
+  return cuePoints
+    .filter((c: any) => c.time >= sel.startBeat && c.time < sel.startBeat + sel.durationBeats)
+    .map((c: any) => ({ beat: c.time - sel.startBeat, label: c.name, kind: 'section' as const }));
+}
+
+/** Warped audio clips (VERIFY 6): bindings.audioclip_get_warp_markers exists
+ *  in 12.4.5b6; exact marker field names TBD from the SDK TypeDoc. */
+export async function getWarpMarkers(clipHandle: unknown): Promise<import('./timebridge').WarpMarker[]> {
+  const raw = await ableton.audioClip.getWarpMarkers(clipHandle); // SDK
+  return raw.map((m: any) => ({ sampleTime: m.sampleTime, beatTime: m.beatTime }));
 }
 
 export async function getTracks(): Promise<TrackInfo[]> {
@@ -141,18 +141,27 @@ export async function getTracks(): Promise<TrackInfo[]> {
 }
 
 /**
- * Bounce the selection to a WAV on disk. THE critical unknown (see header).
- * Returns the absolute path of the rendered file, or null if the SDK can't
- * do it yet — in which case main.ts shows the manual-export fallback UI.
+ * Bounce the selection to a WAV on disk.
+ * VERIFY 1 evidence (12.4.5b6): the only render API is
+ * `renderPreFxAudio(lane, {startTime, endTime}) → path` — per-lane, PRE-FX.
+ * Hypothesis to test first in M1: the main track's input is the summed
+ * post-FX output of all tracks (bindings.song_get_main_track exists), so
+ * pre-FX-of-main ≈ the full mix minus main-bus processing.
+ * Returns null if unavailable/failed → main.ts shows the manual-export
+ * fallback (File > Export Audio/Video).
  */
 export async function bounceAudio(sel: SelectionContext, outPath: string): Promise<string | null> {
   try {
-    await ableton.export.renderAudio({ // SDK: may not exist in beta
-      scope: sel.scope,
-      start: sel.startBeat,
-      length: sel.durationBeats,
-      path: outPath,
+    const mainTrack = await ableton.song.getMainTrack(); // SDK: song_get_main_track
+    const renderedPath: string = await ableton.files.renderPreFxAudio(mainTrack, {
+      startTime: sel.startBeat,
+      endTime: sel.startBeat + sel.durationBeats,
     });
+    // The host chooses the output location; move it where the bundle expects.
+    if (renderedPath !== outPath) {
+      const fs = await import('node:fs/promises');
+      await fs.copyFile(renderedPath, outPath);
+    }
     return outPath;
   } catch {
     return null; // trigger manual-export fallback
@@ -161,48 +170,45 @@ export async function bounceAudio(sel: SelectionContext, outPath: string): Promi
 
 // ---- UI primitives (also SDK surface, so they live in the quarantine) ----
 
-export interface StudioDialog {
-  postMessage(msg: unknown): void;
-  onMessage(handler: (msg: unknown) => void): void;
-  /** Resolves when the user (or close()) dismisses the dialog. */
-  closed: Promise<void>;
-  close(): void;
-}
-
 /**
- * Open the modal dialog hosting the studio WebView (§3, §7).
- * SDK: modal-dialog example in the SDK bundle shows the real API; VERIFY
- * item 5 covers sizing and modality.
+ * Show the modal studio WebView (12.4.5b6 evidence):
+ * showModalDialog(url, width, height, onResult, onError) loads a URL and
+ * calls back ONCE with a payload when the dialog closes. There is no
+ * push-messaging API — live Node↔WebView traffic goes over the loopback
+ * studio server (src/studioServer.ts); this call just opens the dialog and
+ * resolves with the close payload when the user is done.
  */
-export async function openStudioDialog(entryHtmlPath: string, title: string): Promise<StudioDialog> {
-  const dlg = await ctx.ui.showModalDialog({ // SDK placeholder
-    entry: entryHtmlPath,
-    title,
-    width: 960,
-    height: 640,
+export async function showStudioDialog(
+  url: string,
+  width: number,
+  height: number,
+): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    ctx.ui.showModalDialog(url, width, height, resolve, (msg: string) => reject(new Error(msg))); // SDK
   });
-  return {
-    postMessage: (msg) => dlg.postMessage(msg),
-    onMessage: (handler) => dlg.onMessage(handler),
-    closed: dlg.closed,
-    close: () => dlg.close(),
-  };
 }
 
 /**
- * Run `fn` under Live's progress dialog, forwarding its progress reports.
- * SDK: progress-dialog example in the SDK bundle shows the real API.
+ * Run `fn` under Live's progress dialog (12.4.5b6 evidence):
+ * showProgressDialog({text, progress}, onShowDialog, onCancelled), with
+ * dialog.update({text, progress}, cb) / dialog.close(cb). User cancellation
+ * rejects with 'cancelled' — callers translate that to aborting the work.
  */
 export async function withProgress<T>(
-  title: string,
+  text: string,
   fn: (report: (pct: number, text?: string) => void) => Promise<T>,
 ): Promise<T> {
-  const progress = await ctx.ui.showProgressDialog({ title }); // SDK placeholder
-  try {
-    return await fn((pct, text) => progress.update(pct, text));
-  } finally {
-    progress.close();
-  }
+  return new Promise<T>((resolve, reject) => {
+    ctx.ui.showProgressDialog( // SDK
+      { text, progress: 0 },
+      (dialog: any) => {
+        fn((pct, newText) => dialog.update({ text: newText ?? text, progress: pct / 100 }, () => {}))
+          .then((value) => dialog.close(() => resolve(value)))
+          .catch((err) => dialog.close(() => reject(err)));
+      },
+      () => reject(new Error('cancelled')),
+    );
+  });
 }
 
 // ---- helpers ----
