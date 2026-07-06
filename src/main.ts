@@ -17,7 +17,15 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { exportSelection } from './exporter';
 import { renderCloud, renderLocal, type RenderJob } from './render';
-import { generateFeedback, resolveApiKey, persistApiKey, resolveHeyGenKey, persistHeyGenKey } from './feedback';
+import {
+  generateFeedback,
+  resolveApiKey,
+  persistApiKey,
+  resolveHeyGenKey,
+  persistHeyGenKey,
+  clearStoredKey,
+  keyStatus,
+} from './feedback';
 import { authorFeedbackComposition } from './composer';
 import { type StyleInfo } from './studioProtocol';
 import type { RenderRequest, Timeline } from './types';
@@ -58,6 +66,15 @@ export async function activate(activation: unknown): Promise<void> {
         void runFeedbackSession(targetArg).catch((e) => console.error('feedback session failed:', e));
       },
       live.PROJECT_SCOPES, // arrangement time-selection — select all for the whole project
+    );
+    await live.registerStudioAction(
+      'HyperFrames: Manage API Keys…',
+      'hyperframesFeedback.manageKeys',
+      () => {
+        console.log('manage keys invoked');
+        void runKeySettings().catch((e) => console.error('key settings failed:', e));
+      },
+      [...live.CLIP_SCOPES, ...live.PROJECT_SCOPES], // reachable from any right-click
     );
     console.log('activate: context-menu actions registered on all scopes');
   } catch (e) {
@@ -313,6 +330,82 @@ async function promptForHeyGenKey(): Promise<string | null> {
   const dir = live.storageDirectory();
   if (dir) await persistHeyGenKey(dir, key).catch((e: unknown) => console.error('heygen key persist failed:', e));
   return key;
+}
+
+interface KeySettingsResult {
+  anthropic?: string;
+  heygen?: string;
+  clearA?: boolean;
+  clearH?: boolean;
+}
+
+/** Settings dialog to view/update/clear both stored API keys. */
+async function runKeySettings(): Promise<void> {
+  const dir = live.storageDirectory();
+  const status = await keyStatus(dir);
+  const payload = await live.showStudioDialog(keySettingsUrl(status), 540, 460).catch(() => '');
+  let choice: KeySettingsResult;
+  try {
+    choice = JSON.parse(payload) as KeySettingsResult;
+  } catch {
+    return; // cancelled
+  }
+  if (!dir) {
+    await live.showStudioDialog(infoDialogUrl('Cannot save', 'No storage directory available.'), 460, 200).catch(() => {});
+    return;
+  }
+  const changed: string[] = [];
+  if (choice.clearA) {
+    await clearStoredKey(dir, 'anthropic').catch((e) => console.error(e));
+    changed.push('Anthropic key cleared');
+  } else if (choice.anthropic?.trim()) {
+    await persistApiKey(dir, choice.anthropic.trim()).catch((e) => console.error(e));
+    changed.push('Anthropic key updated');
+  }
+  if (choice.clearH) {
+    await clearStoredKey(dir, 'heygen').catch((e) => console.error(e));
+    changed.push('HyperFrames Cloud key cleared');
+  } else if (choice.heygen?.trim()) {
+    await persistHeyGenKey(dir, choice.heygen.trim()).catch((e) => console.error(e));
+    changed.push('HyperFrames Cloud key updated');
+  }
+  const msg = changed.length ? changed.join('\n') : 'No changes made.';
+  await live.showStudioDialog(infoDialogUrl('API keys', msg), 460, 220).catch(() => {});
+}
+
+/** Key-management dialog: shows each key's status, lets the user set or clear it. */
+function keySettingsUrl(status: { anthropic: boolean; heygen: boolean }): string {
+  const badge = (on: boolean) =>
+    on
+      ? `<span style="color:#57c785;font-weight:600">● configured</span>`
+      : `<span style="color:#ff6b6b;font-weight:600">● not set</span>`;
+  const field = (id: string, label: string, on: boolean, placeholder: string, hint: string) =>
+    `<div style="display:flex;flex-direction:column;gap:6px;padding:12px;border:1px solid hsl(0,0%,13%);border-radius:8px;background:hsl(0,0%,15%)">` +
+    `<div style="display:flex;justify-content:space-between;align-items:center"><b style="color:#eee">${label}</b>${badge(on)}</div>` +
+    `<div style="font-size:11px;color:hsl(0,0%,55%)">${hint}</div>` +
+    `<input id="${id}" type="password" placeholder="${placeholder}" style="padding:7px 10px;border-radius:6px;` +
+    `border:1px solid hsl(0,0%,7%);background:hsl(0,0%,10%);color:#eee;font:inherit" />` +
+    (on
+      ? `<label style="font-size:12px;display:flex;gap:6px;align-items:center;color:hsl(0,0%,60%)">` +
+        `<input type="checkbox" id="${id}clr" /> Remove the stored key</label>`
+      : '') +
+    `</div>`;
+  const html =
+    `<!doctype html><meta charset=utf-8><body style="margin:0;background:hsl(0,0%,21%);color:hsl(0,0%,71%);` +
+    `font:13px -apple-system,sans-serif;display:flex;flex-direction:column;gap:12px;padding:20px;height:100vh;box-sizing:border-box">` +
+    `<b style="color:#ff9d4d;font-size:15px">Manage API keys</b>` +
+    field('a', 'Anthropic (Claude)', status.anthropic, 'sk-ant-… (leave blank to keep)', 'Reviews your project and designs the video.') +
+    field('h', 'HyperFrames Cloud (HeyGen)', status.heygen, 'key… (leave blank to keep)', 'Renders the video. Top up credits at platform.heygen.com.') +
+    `<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:auto">` +
+    `<button onclick="post('')" style="padding:6px 18px;border-radius:12px;border:1px solid hsl(0,0%,7%);background:hsl(0,0%,16%);color:inherit;font:inherit">Cancel</button>` +
+    `<button onclick="save()" style="padding:6px 18px;border-radius:12px;border:0;background:#ff9d4d;color:#1a1200;font-weight:600;font:inherit">Save</button></div>` +
+    `<script>` +
+    `function post(v){(window.webkit?.messageHandlers?.live||window.chrome?.webview).postMessage({method:'close_and_send',params:[v]})}` +
+    `function val(id){var e=document.getElementById(id);return e?e.value:''}` +
+    `function chk(id){var e=document.getElementById(id);return !!(e&&e.checked)}` +
+    `function save(){post(JSON.stringify({anthropic:val('a'),heygen:val('h'),clearA:chk('aclr'),clearH:chk('hclr')}))}` +
+    `</script></body>`;
+  return 'data:text/html,' + encodeURIComponent(html);
 }
 
 /**

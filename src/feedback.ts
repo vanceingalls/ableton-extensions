@@ -76,6 +76,20 @@ export async function persistHeyGenKey(storageDir: string, key: string): Promise
   await fs.writeFile(path.join(storageDir, 'heygen-key'), key.trim(), { mode: 0o600 });
 }
 
+/** Remove a stored key file (used by the key-management dialog). */
+export async function clearStoredKey(storageDir: string, which: 'anthropic' | 'heygen'): Promise<void> {
+  const file = which === 'anthropic' ? 'anthropic-key' : 'heygen-key';
+  await fs.rm(path.join(storageDir, file), { force: true });
+}
+
+/** Whether a key is currently available (env or stored) — for the settings UI. */
+export async function keyStatus(storageDir?: string): Promise<{ anthropic: boolean; heygen: boolean }> {
+  return {
+    anthropic: !!(await resolveApiKey({ storageDir })),
+    heygen: !!(await resolveHeyGenKey(storageDir)),
+  };
+}
+
 /** Call Claude for feedback. Throws with a readable message on failure. */
 export async function generateFeedback(
   summary: ProjectSummary,
