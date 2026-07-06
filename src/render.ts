@@ -186,11 +186,24 @@ function run(cmd: string, args: string[], cwd: string): Promise<void> {
       '/opt/homebrew/bin',
       '/usr/local/bin',
     ].join(':');
-    const env = { ...process.env, PATH: `${extra}:${process.env.PATH ?? ''}` };
-    const child = spawn(cmd, args, { cwd, stdio: 'inherit', env });
-    child.on('error', reject);
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${extra}:${process.env.PATH ?? ''}` };
+    // Live's managed host runs the extension's Node under the permission model
+    // (--experimental-permission / --allow-fs-*), often via NODE_OPTIONS. A
+    // child `npx` (also Node) would inherit that and be sandboxed too, so its
+    // file writes (Chrome profile, temp, output) fail. Strip it for children —
+    // they run as ordinary OS processes.
+    delete env.NODE_OPTIONS;
+    // Capture output so a child failure surfaces WHY (inherited stdio would be
+    // lost — the host only logs the extension's own console output).
+    let out = '';
+    const child = spawn(cmd, args, { cwd, env });
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (out += d));
+    child.on('error', (e) => reject(new Error(`${cmd} failed: ${e.message}`)));
     child.on('exit', (code) =>
-      code === 0 ? resolve() : reject(new Error(`${cmd} exited with ${code}`)),
+      code === 0
+        ? resolve()
+        : reject(new Error(`${cmd} exited with ${code}. Output tail:\n${out.slice(-1800)}`)),
     );
   });
 }

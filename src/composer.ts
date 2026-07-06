@@ -204,7 +204,8 @@ function runCapture(cmd: string, args: string[], cwd: string): Promise<string> {
       '/opt/homebrew/bin',
       '/usr/local/bin',
     ].join(':');
-    const env = { ...process.env, PATH: `${extra}:${process.env.PATH ?? ''}` };
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${extra}:${process.env.PATH ?? ''}` };
+    delete env.NODE_OPTIONS; // don't inherit the host's Node permission flags into children
     let out = '';
     const child = spawn(cmd, args, { cwd, env });
     child.stdout.on('data', (d) => (out += d));
