@@ -66,22 +66,74 @@ process that scans an installable-extensions folder for packages with a
 The 12.4.2 release binary itself shows no `.ablx` strings; the runtime
 presumably completes in 12.4.5+. Confirm all of this against the real SDK.
 
-## VERIFY items (AGENT_INSTRUCTIONS §2) — all OPEN
+### 2026-07-05 — VERIFY evidence from Live 12.4.5b6 binaries (pre-SDK-zip)
 
-Blocked on the SDK bundle (Centercode beta download requires the user's
-Ableton account) and on HyperFrames details only the user has. Cite a TypeDoc
-page or a test result when closing an item.
+Live 12.4.5b6 (build 2026-06-29) is installed. Its extension host is
+`Contents/Helpers/ExtensionHost/`: a bundled **Node v24.14.1** plus
+`ExtensionHostNodeModule.node` (~26 MB), which **embeds the SDK's host-side
+JavaScript in plaintext**. Extracted (scratchpad `module-strings.txt`):
+the full 103-function `bindings.*` low-level API, and the privileged JS layer
+(`withinTransaction`, `registerContextMenuAction`, `showModalDialog`,
+`showProgressDialog`, `renderPreFxAudio`, `importIntoProject`). Everything
+below cites those strings; confirm against SDK TypeDoc when the zip arrives.
+
+Design consequences:
+
+- **Audio render is `renderPreFxAudio(lane, {startTime, endTime}) → path`** —
+  per-lane, PRE-effects. For a full-mix soundtrack, the promising route is
+  `song_get_main_track` (exists): the main track's *input* is the summed
+  post-FX output of every track, so pre-FX-of-main ≈ the mix without
+  main-bus processing. TEST THIS FIRST in M1; manual-export fallback stays.
+- **No automation/envelope bindings exist at all** (no value-at-time either),
+  and tempo is **static only** (`song_get_tempo`; `scene_get_tempo`). So v1
+  mappings cannot read automation lanes — exporter emits `automation: {}`,
+  constant tempo becomes the one-point map TimeBridge already handles. Keep
+  the schema fields; they are forward-compatible. Mapping UI v1 can offer
+  note-derived signals (energy/velocity) instead of lanes.
+- **Modal dialog: `showModalDialog(url, width, height, onResult, onError)`**
+  — takes a URL and calls back once with a payload when the dialog closes.
+  No push-messaging API to the WebView in the embedded JS. BUT Node has
+  outbound network and the dialog loads any URL, so the studio bridge becomes:
+  **the extension serves the studio over loopback HTTP (+ WebSocket) and
+  passes `http://127.0.0.1:<port>` to showModalDialog**. Full-duplex
+  Node↔WebView messaging without any SDK support; `studioProtocol.ts` types
+  ride the WebSocket unchanged; the close payload is the fallback channel.
+  (Live-side WKWebView does have `TWebViewScriptMessageHandler`, so an
+  official bridge may exist — check the SDK docs for it first.)
+- **WebView is WKWebView** (WebKit, not Chromium): Canvas 2D and WebGL/WebGL2
+  fine on modern macOS; don't count on Chromium-only APIs.
+- **Warp markers readable**: `audioclip_get_warp_markers` (+ `warp_mode`,
+  `warping`, `audioclip_get_file_path`). Exact marker shape TBD from TypeDoc.
+- **Markers**: `song_get_cue_points` + `cuepoint_get_name`/`get_time`.
+  ⚠️ No cue-point *creation* binding found — M4 cue-sheet import may be
+  blocked in this beta (locators can be renamed but perhaps not created).
+- **Delivery**: `importIntoProject(filePath) → destinationPath` imports a
+  file into the project folder — the clean MP4 delivery path (VERIFY 7).
+- Notes: `midiclip_get_notes`/`set_notes` with API↔flip converters. Clip
+  region: `clip_get_start/end_time`, `loop_start/end`, `start/end_marker`.
+  `clip_get_color` exists; no track-color binding; time signature only per
+  scene (`scene_get_signature_*`) — default 4/4 for arrangement scope.
+- Context menu: `registerContextMenuAction(category, title, commandId, cb)`;
+  the title is auto-prefixed with the extension name; valid `category`
+  values not visible in the binary (SDK docs). Action callbacks receive
+  flip refs revived into handles — matches the `getObjectFromHandle` story.
+- Undo: `song_begin/end_undo_step_send` underpin `withinTransaction` ✓.
+
+## VERIFY items (AGENT_INSTRUCTIONS §2)
+
+Evidence = 12.4.5b6 binary strings (above). Final confirmation = SDK zip
+TypeDoc + a running test extension.
 
 | # | Item | Status | Answer / citation |
 |---|------|--------|-------------------|
-| 1 | Audio render scope (clip/session bounce vs arrangement range) | OPEN | |
-| 2 | Automation enumeration + breakpoint read; curve shapes? | OPEN | |
-| 3 | Tempo map (ramps) readable, or static tempo only? | OPEN | |
-| 4 | WebView engine: Chromium? WebGL/WebGL2? | OPEN | |
-| 5 | Dialog sizing/modality; is Live blocked while open? | OPEN | |
-| 6 | Warp marker read access; exact shape | OPEN | |
-| 7 | Sandbox escape hatch for delivering the MP4 | OPEN | |
-| 8 | HyperFrames render invocation (CLI flags / Cloud API, auth, seek hook) | OPEN — ask the user | |
+| 1 | Audio render scope | EVIDENCE | `renderPreFxAudio(lane,{startTime,endTime})→path`, per-lane pre-FX; try main track for full mix; manual-export fallback kept |
+| 2 | Automation read | EVIDENCE: NOT AVAILABLE | zero envelope/automation bindings in 12.4.5b6 → v1 ships without lane mappings |
+| 3 | Tempo map | EVIDENCE: STATIC ONLY | `song_get_tempo` only → one-point tempo map |
+| 4 | WebView engine | EVIDENCE | WKWebView (WebKit); Canvas2D/WebGL OK, no Chromium extras |
+| 5 | Dialog sizing/modality | EVIDENCE (partial) | `showModalDialog(url,w,h)`; result payload on close; modality/max size untested |
+| 6 | Warp marker read | EVIDENCE | `audioclip_get_warp_markers`; shape TBD from TypeDoc |
+| 7 | MP4 delivery | EVIDENCE | `importIntoProject(path)` into the project folder |
+| 8 | HyperFrames API | OPEN — ask the user | |
 
 ## Manual test matrix (§11) — fill in during M1/M2
 

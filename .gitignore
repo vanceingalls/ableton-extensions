@@ -3,3 +3,4 @@ dist/
 *.mp4
 templates/*/timeline.json
 templates/*/audio.wav
+research/*.txt
