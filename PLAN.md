@@ -4,6 +4,18 @@ Written 2026-07-05 by the previous agent for whoever continues. Follow it in
 order. When this plan and `AGENT_INSTRUCTIONS.md` disagree, AGENT_INSTRUCTIONS
 wins — read it fully before doing anything.
 
+> **ADDENDUM (later on 2026-07-05):** §3 and §4 below are DONE (see git log).
+> Live 12.4.5b6 beta is installed and its extension-host binary was mined for
+> the real API — read `research/sdk-api-notes.md` and the VERIFY table in
+> `DECISIONS.md` before touching `liveAdapter.ts`; six of eight VERIFY items
+> now have binary evidence and the adapter/main.ts already reflect it
+> (loopback SSE/POST studio bridge in `src/studioServer.ts`, static tempo, no
+> automation read, renderPreFxAudio bounce hypothesis). Still blocking: the
+> SDK zip (packaging/`.ablx`/category values/TypeDoc confirmation, §5 item 2)
+> and the HyperFrames API details (§5 item 1). Next code work after those:
+> M1 — load a hello-world extension in the beta, test the main-track bounce
+> hypothesis, then the real right-click → export path.
+
 ---
 
 ## 0. Environment (do this first, every session)
