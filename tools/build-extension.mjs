@@ -10,11 +10,23 @@ const production = process.argv.includes('--production');
 // globals the Node runtime normally provides (TextEncoder/TextDecoder, and the
 // fetch family the Anthropic SDK needs). Polyfill them from Node's built-ins at
 // the top of the bundle so the SDK loads and can make requests.
+// Live's Extension Host evaluates the bundle in a Node context that omits a
+// number of Web globals the Anthropic SDK + undici need. These all exist in
+// Node built-ins, so we install them from there before any bundled module runs.
 const banner = `(() => {
   const g = globalThis;
-  const util = require('node:util');
-  if (!g.TextEncoder) g.TextEncoder = util.TextEncoder;
-  if (!g.TextDecoder) g.TextDecoder = util.TextDecoder;
+  const pick = (mod, names) => {
+    try {
+      const m = require(mod);
+      for (const n of names) if (!g[n] && m[n]) g[n] = m[n];
+    } catch {}
+  };
+  pick('node:util', ['TextEncoder', 'TextDecoder']);
+  pick('node:buffer', ['Blob', 'File']);
+  pick('node:stream/web', ['ReadableStream', 'WritableStream', 'TransformStream',
+    'ByteLengthQueuingStrategy', 'CountQueuingStrategy']);
+  pick('node:perf_hooks', ['performance']);
+  pick('node:worker_threads', ['MessageChannel', 'MessagePort']);
 })();`;
 
 await esbuild.build({
