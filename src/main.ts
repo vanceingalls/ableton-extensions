@@ -84,7 +84,7 @@ interface StudioResult {
 async function runStudioSession(targetHandle: unknown): Promise<void> {
   const sel = await live.getSelection(targetHandle);
   console.log(`selection: ${sel.scope} "${sel.clipName}" ${sel.durationBeats} beats, midi=${sel.isMidi}`);
-  const exported = await exportSelection(sel, DEFAULT_REQUEST);
+  const exported = await exportSelection(sel, { ...DEFAULT_REQUEST, outputDir: freshWorkDir('render') });
   console.log(`exported ${exported.timeline.notes.length} notes; audio: ${exported.audioPath ?? 'UNAVAILABLE (silent render)'}`);
   const styles = await loadStyles();
 
@@ -106,6 +106,7 @@ async function runStudioSession(targetHandle: unknown): Promise<void> {
     style: choice.style ?? DEFAULT_REQUEST.style,
     mappings: [],
     useCloud: true,
+    outputDir: freshWorkDir('render'),
   });
 }
 
@@ -216,7 +217,7 @@ async function runFeedbackSession(targetArg: unknown): Promise<void> {
 
   const durationSeconds = FB_INTRO + Math.max(1, report.points.length) * FB_PER + FB_OUTRO;
   const timeline = feedbackTimeline(injected.title, durationSeconds);
-  const workDir = path.join(tmpBase(), `clip2video-fb-${timeline.meta.exportedAt}`);
+  const workDir = path.join(workBase(), `fb-${Date.now()}`);
   await fs.mkdir(workDir, { recursive: true });
 
   await runRenderJob(
@@ -272,8 +273,19 @@ async function promptForApiKey(): Promise<string | null> {
   return key;
 }
 
-function tmpBase(): string {
-  return process.env.TMPDIR ?? '/tmp';
+/**
+ * Base directory for work files. Live's managed host sandboxes the filesystem
+ * — writes to /tmp are DENIED (ERR_ACCESS_DENIED). The extension may only write
+ * under its own tempDirectory, so use that; fall back to the OS temp dir only
+ * for the dev CLI host (which isn't sandboxed).
+ */
+function workBase(): string {
+  return live.tempDirectory() ?? process.env.TMPDIR ?? '/tmp';
+}
+
+/** A fresh, sandbox-safe work directory path (not yet created). */
+function freshWorkDir(kind: string): string {
+  return path.join(workBase(), `${kind}-${Date.now()}`);
 }
 
 function doneDialogUrl(deliveredPath: string): string {
