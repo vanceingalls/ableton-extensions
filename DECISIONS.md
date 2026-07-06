@@ -119,21 +119,51 @@ Design consequences:
   flip refs revived into handles — matches the `getObjectFromHandle` story.
 - Undo: `song_begin/end_undo_step_send` underpin `withinTransaction` ✓.
 
-## VERIFY items (AGENT_INSTRUCTIONS §2)
+### 2026-07-05 — M0 CLOSED: SDK zip TypeDoc + HyperFrames docs verified
 
-Evidence = 12.4.5b6 binary strings (above). Final confirmation = SDK zip
-TypeDoc + a running test extension.
+SDK zip 1.0.0-beta.0 unpacked (`~/Downloads/extensions-sdk-1.0.0-beta.0`);
+full confirmed API in `research/sdk-typedoc-summary.md`. HyperFrames turned
+out to be **public** (github.com/heygen-com/hyperframes, v0.7.36, docs at
+hyperframes.heygen.com) — no need to ask the user; conventions verified
+against the CLI itself and its docs. Corrections to earlier binary evidence:
 
-| # | Item | Status | Answer / citation |
+- **Cue points CAN be created/deleted** (`Song.createCuePoint(timeBeats)`,
+  `deleteCuePoint`) — the earlier "M4 at risk" note was wrong; M4 is GO.
+- `renderPreFxAudio(track: AudioTrack, startBeats, endBeats) → wav path` —
+  types demand AudioTrack, but `Song.mainTrack: Track` exists; whether the
+  runtime accepts main (pre-FX of main ≈ full summed mix) is the M1 test.
+- `showModalDialog` officially supports **http://localhost** URLs — the
+  loopback studio-server design is the sanctioned pattern, not a workaround.
+  Dialog returns a string by posting `{method:"close_and_send",
+  params:[str]}` to `window.webkit.messageHandlers.live` (macOS) /
+  `window.chrome.webview` (Windows).
+- Progress dialog is `ui.withinProgressDialog(text, {progress}, cb(update,
+  abortSignal))` — cancellation is an AbortSignal; wire it to cancelRender.
+- Context-menu scopes are string literals; for clip/track/arrangement
+  coverage register: MidiClip, AudioClip, MidiTrack, AudioTrack,
+  MidiTrack.ArrangementSelection, AudioTrack.ArrangementSelection.
+- Note fields are `startTime`/`duration` (beats), `velocity?` optional;
+  `Clip.color` is a **number**; tracks have NO color.
+- HyperFrames seek hook for canvas templates: listen for the **`hf-seek`**
+  CustomEvent (`detail.time` seconds) — replaces our imagined
+  `window.renderFrame(seconds)` convention. Composition = HTML with
+  data-composition-* attrs; `<audio class="clip">` elements are muxed
+  automatically; local render `hyperframes render [DIR] -c … -o … -f …`;
+  cloud = `POST /v3/assets` → `POST /v3/hyperframes/renders` → poll →
+  presigned video_url, auth via HEYGEN_API_KEY/HYPERFRAMES_API_KEY.
+
+## VERIFY items (AGENT_INSTRUCTIONS §2) — ALL RESOLVED
+
+| # | Item | Status | Answer (citations in research/sdk-typedoc-summary.md) |
 |---|------|--------|-------------------|
-| 1 | Audio render scope | EVIDENCE | `renderPreFxAudio(lane,{startTime,endTime})→path`, per-lane pre-FX; try main track for full mix; manual-export fallback kept |
-| 2 | Automation read | EVIDENCE: NOT AVAILABLE | zero envelope/automation bindings in 12.4.5b6 → v1 ships without lane mappings |
-| 3 | Tempo map | EVIDENCE: STATIC ONLY | `song_get_tempo` only → one-point tempo map |
-| 4 | WebView engine | EVIDENCE | WKWebView (WebKit); Canvas2D/WebGL OK, no Chromium extras |
-| 5 | Dialog sizing/modality | EVIDENCE (partial) | `showModalDialog(url,w,h)`; result payload on close; modality/max size untested |
-| 6 | Warp marker read | EVIDENCE | `audioclip_get_warp_markers`; shape TBD from TypeDoc |
-| 7 | MP4 delivery | EVIDENCE | `importIntoProject(path)` into the project folder |
-| 8 | HyperFrames API | OPEN — ask the user | |
+| 1 | Audio render scope | RESOLVED (runtime test pending) | pre-FX render of an AudioTrack over a beat range; main-track full-mix trick to test in M1; manual-export fallback kept for MIDI-only Sets |
+| 2 | Automation read | RESOLVED: NOT AVAILABLE | no envelope API in SDK 1.0.0-beta.0 → v1 ships without lane mappings |
+| 3 | Tempo map | RESOLVED: STATIC ONLY | `Song.tempo` scalar → one-point tempo map |
+| 4 | WebView engine | RESOLVED | WKWebView (macOS) / WebView2 (Windows implied); Canvas2D/WebGL OK |
+| 5 | Dialog sizing/modality | RESOLVED | `showModalDialog(url,w,h)→Promise<string>`; http://localhost allowed; close via close_and_send message; no documented size limits |
+| 6 | Warp marker read | RESOLVED | `AudioClip.warpMarkers: {beatTime, sampleTime}[]` — matches TimeBridge exactly |
+| 7 | MP4 delivery | RESOLVED | `resources.importIntoProject(path)`; temp files in `environment.tempDirectory` |
+| 8 | HyperFrames API | RESOLVED | public repo/docs; hf-seek event hook; CLI + /v3 cloud API (see summary) |
 
 ## Manual test matrix (§11) — fill in during M1/M2
 
