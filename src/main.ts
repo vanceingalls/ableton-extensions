@@ -21,10 +21,10 @@ import { generateFeedback, resolveApiKey, persistApiKey } from './feedback';
 import { type StyleInfo } from './studioProtocol';
 import type { RenderRequest, Timeline } from './types';
 import type { FeedbackReport } from './feedbackTypes';
+import { TEMPLATE_ASSETS, STUDIO_HTML } from './templateAssets.generated';
 import * as live from './liveAdapter';
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates');
-const STUDIO_HTML = path.join(__dirname, '..', 'panel', 'index.html');
 
 /** Studio opens with these until the user changes them. */
 const DEFAULT_REQUEST: RenderRequest = {
@@ -116,8 +116,7 @@ async function buildStudioDataUrl(
   availableStyles: StyleInfo[],
   audioAvailable: boolean,
 ): Promise<string> {
-  const html = await fs.readFile(STUDIO_HTML, 'utf8');
-  const injected = html.replace(
+  const injected = STUDIO_HTML.replace(
     'null /*__STUDIO_DATA__*/',
     JSON.stringify({ timeline, availableStyles, audioAvailable }),
   );
@@ -327,18 +326,17 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
 }
 
-/** Enumerate templates/<dir>/template.json manifests for the mapping UI. */
+/** Available styles, from the inlined template manifests (NOT read from the
+ *  extension dir — the sandbox forbids that). */
 async function loadStyles(): Promise<StyleInfo[]> {
   const styles: StyleInfo[] = [];
-  for (const entry of await fs.readdir(TEMPLATES_DIR, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
+  for (const [id, files] of Object.entries(TEMPLATE_ASSETS)) {
+    const json = files['template.json'];
+    if (!json) continue;
     try {
-      const manifest = JSON.parse(
-        await fs.readFile(path.join(TEMPLATES_DIR, entry.name, 'template.json'), 'utf8'),
-      );
-      styles.push({ id: entry.name, manifest });
+      styles.push({ id, manifest: JSON.parse(json) });
     } catch {
-      // No manifest → not a selectable style (§8 makes the manifest mandatory).
+      /* malformed manifest → skip */
     }
   }
   return styles;

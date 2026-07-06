@@ -2,6 +2,10 @@
 // shape as the SDK examples' build.ts. The SDK is bundled in.
 import * as esbuild from 'esbuild';
 import * as fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
+
+// Inline template files so the sandboxed extension never reads its install dir.
+execFileSync('node', ['tools/gen-template-assets.mjs'], { stdio: 'inherit' });
 
 const manifest = JSON.parse(fs.readFileSync('manifest.json', 'utf8'));
 const production = process.argv.includes('--production');

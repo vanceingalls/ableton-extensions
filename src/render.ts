@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import type { Timeline } from './types';
+import { TEMPLATE_ASSETS } from './templateAssets.generated';
 
 export type RenderPhase = 'uploading' | 'rendering' | 'downloading';
 
@@ -33,21 +34,21 @@ export interface RenderJob {
   injectScripts?: { filename: string; content: string }[];
 }
 
-/** Per-composition files the exporter/stager own. Never copy these FROM the
- *  template dir — a dev checkout has fixture copies there (make-fixture.mjs)
- *  that would clobber the real exported clip data and mux the wrong audio. */
-const GENERATED = new Set(['timeline.json', 'audio.wav', 'timeline.js', 'meta.json', 'output.mp4']);
-
-/** Copy the template's own assets over the work dir (which already holds the
- *  real exported timeline.json + audio.wav), inline the timeline as JS, and
- *  patch the composition's data attributes (HyperFrames reads duration/size
- *  from the HTML, not from flags). */
+/** Write the template's inlined files into the work dir, inline the timeline as
+ *  JS, and patch the composition's data attributes (HyperFrames reads
+ *  duration/size from the HTML, not from flags).
+ *
+ *  Files come from TEMPLATE_ASSETS (bundled at build time), NOT from the
+ *  extension's install dir — Live's sandbox forbids reading it. The style is
+ *  the template dir's basename. The work dir already holds the real exported
+ *  timeline.json + audio.wav (written there by the exporter). */
 export async function stageBundle(job: RenderJob): Promise<void> {
-  await fs.cp(job.templateDir, job.workDir, {
-    recursive: true,
-    force: true,
-    filter: (src) => !GENERATED.has(path.basename(src)),
-  });
+  const style = path.basename(job.templateDir);
+  const assets = TEMPLATE_ASSETS[style];
+  if (!assets) throw new Error(`Unknown template "${style}" — not in TEMPLATE_ASSETS.`);
+  for (const [name, content] of Object.entries(assets)) {
+    await fs.writeFile(path.join(job.workDir, name), content, 'utf8');
+  }
 
   const indexPath = path.join(job.workDir, 'index.html');
   const { width, height } = job.timeline.video;

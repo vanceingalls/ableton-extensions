@@ -11,9 +11,7 @@
     font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
     color: #f2f2f2; --accent: #ff9d4d;
   }
-  #head {
-    position: absolute; top: 7%; left: 8%; right: 8%; height: 34%;
-  }
+  #head { position: absolute; top: 7%; left: 8%; right: 8%; height: 34%; visibility: hidden; }
   #kicker { font-size: 2.2vh; letter-spacing: .35em; text-transform: uppercase; color: var(--accent); }
   #title { font-size: 5.6vh; font-weight: 800; line-height: 1.05; margin-top: 1.4vh; max-width: 60%; }
   #overall { font-size: 2.6vh; font-weight: 300; color: #b9b9c2; margin-top: 1.8vh; max-width: 80%; line-height: 1.4; }
@@ -22,12 +20,12 @@
   #scoreNum { font-size: 13vh; font-weight: 800; line-height: 1; }
   #scoreLabel { font-size: 2vh; letter-spacing: .2em; text-transform: uppercase; color: #8a8a95; }
 
-  /* One card visible at a time, in a fixed lower viewport — no overlap regardless of count. */
+  /* One card visible at a time, centered in a fixed lower viewport. */
   #cards { position: absolute; left: 8%; right: 8%; top: 46%; bottom: 9%; }
+  .cardwrap { position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%); }
   .card {
-    position: absolute; left: 0; right: 0; top: 50%; transform: translateY(-50%);
-    padding: 3.2vh 3.4vh 3.2vh 4.2vh; border-radius: 1.6vh;
-    background: #16161c; border: 1px solid #24242c; opacity: 0;
+    position: relative; padding: 3.2vh 3.4vh 3.2vh 4.2vh; border-radius: 1.6vh;
+    background: #16161c; border: 1px solid #24242c; visibility: hidden;
   }
   .card::before {
     content: ''; position: absolute; left: 0; top: 10%; bottom: 10%; width: .7vh;
@@ -37,7 +35,6 @@
   .card .heading { font-size: 4.4vh; font-weight: 700; margin-top: 1vh; line-height: 1.1; }
   .card .detail { font-size: 3vh; font-weight: 300; color: #c4c4cd; margin-top: 1.4vh; line-height: 1.4; }
   #counter { position: absolute; left: 8%; bottom: 4%; font-size: 2vh; color: #6a6a75; letter-spacing: .1em; }
-
   #bar { position: absolute; left: 0; bottom: 0; height: .7vh; background: var(--accent); width: 0; }
 </style>
 </head>
@@ -47,9 +44,9 @@
      data-width="1080" data-height="1920">
   <div id="stage">
     <div id="head">
-      <div id="kicker" data-role="kicker">Track Review</div>
-      <div id="title" data-role="title">Untitled</div>
-      <div id="overall" data-role="overall"></div>
+      <div id="kicker">Track Review</div>
+      <div id="title">Untitled</div>
+      <div id="overall"></div>
     </div>
     <div id="score">
       <div id="scoreNum">0</div>
@@ -61,116 +58,80 @@
   </div>
 </div>
 
+<script src="./gsap.min.js"></script>
 <script src="./feedback.js"></script>
 <script>
 /**
- * Feedback video — a pure function of time (no rAF state, no Date.now, no
- * Math.random at draw). window.FEEDBACK is injected by the Node side; a dev
- * fallback loads ./feedback.json. Cards reveal one at a time; the score counts
- * up. Everything is driven by the HyperFrames `hf-seek` event so the render is
- * frame-exact.
+ * Feedback video — a paused GSAP timeline registered on window.__timelines,
+ * which the HyperFrames renderer seeks per frame (the native DOM path — no
+ * canvas, so the hf-seek route the pulse template uses doesn't apply). Score
+ * counts up, one sentiment-colored card shows at a time.
  */
 const SENTIMENT = {
   strength:   { tag: 'Strength',   bar: '#57c785' },
   suggestion: { tag: 'Suggestion', bar: '#ffb454' },
   watch:      { tag: 'Watch',      bar: '#ff6b6b' },
 };
-
-// Register a stub timeline synchronously so the renderer's readiness poll
-// resolves immediately (we animate via hf-seek, not GSAP).
-window.__timelines = window.__timelines || {};
-window.__timelines['main'] = { pause(){return this;}, paused(){return true;}, seek(){return this;}, totalTime(){return 0;} };
-
-const F = window.FEEDBACK || null;
+const INTRO = 2.2, PER = 2.6, OUTRO = 1.6;
 const el = (id) => document.getElementById(id);
-let DURATION = 16, INTRO = 2.2, PER = 2.6, cards = [];
+const escapeHtml = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
-function init() {
-  const f = F || { title: 'Untitled', overall: '', points: [], score: 0, accent: '#ff9d4d' };
-  if (f.accent) el('stage').style.setProperty('--accent', f.accent);
-  el('title').textContent = f.title;
-  document.querySelector('[data-role="overall"]').textContent = f.overall;
+const F = window.FEEDBACK || { title: 'Untitled', overall: '', points: [], score: 0, accent: '#ff9d4d' };
+if (F.accent) el('stage').style.setProperty('--accent', F.accent);
+el('title').textContent = F.title;
+el('overall').textContent = F.overall;
 
-  const container = el('cards');
-  container.replaceChildren();
-  cards = (f.points || []).slice(0, 6).map((p, i) => {
-    const s = SENTIMENT[p.sentiment] || SENTIMENT.suggestion;
-    const card = document.createElement('div');
-    card.className = 'card';
-    card.style.setProperty('--bar', p.trackColor || s.bar);
-    card.innerHTML =
-      `<div class="tag">${escapeHtml(s.tag)}${p.track ? ' · ' + escapeHtml(p.track) : ''}</div>` +
-      `<div class="heading">${escapeHtml(p.heading)}</div>` +
-      `<div class="detail">${escapeHtml(p.detail)}</div>`;
-    container.appendChild(card);
-    return { card, appearAt: INTRO + i * PER };
-  });
+// Build cards: an outer .cardwrap (centered via CSS) + inner .card (animated).
+const cards = (F.points || []).slice(0, 6).map((p) => {
+  const s = SENTIMENT[p.sentiment] || SENTIMENT.suggestion;
+  const wrap = document.createElement('div');
+  wrap.className = 'cardwrap';
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.style.setProperty('--bar', p.trackColor || s.bar);
+  card.innerHTML =
+    `<div class="tag">${escapeHtml(s.tag)}${p.track ? ' · ' + escapeHtml(p.track) : ''}</div>` +
+    `<div class="heading">${escapeHtml(p.heading)}</div>` +
+    `<div class="detail">${escapeHtml(p.detail)}</div>`;
+  wrap.appendChild(card);
+  el('cards').appendChild(wrap);
+  return card;
+});
 
-  DURATION = INTRO + Math.max(1, cards.length) * PER + 1.6;
-  window.FEEDBACK_DURATION = DURATION; // read by the Node side to size the timeline
-  renderFrame(0);
-}
+const DURATION = INTRO + Math.max(1, cards.length) * PER + OUTRO;
+window.FEEDBACK_DURATION = DURATION;
 
-function renderFrame(t) {
-  const f = F || { score: 0 };
-  // Score counts up during the intro.
-  const scoreProg = clamp(t / INTRO, 0, 1);
-  el('scoreNum').textContent = String(Math.round((f.score || 0) * easeOut(scoreProg)));
+const tl = gsap.timeline({ paused: true });
+tl.fromTo('#head', { autoAlpha: 0, y: 30 }, { autoAlpha: 1, y: 0, duration: INTRO * 0.8, ease: 'power2.out' }, 0);
 
-  // Header fades/rises in.
-  const headProg = clamp(t / (INTRO * 0.8), 0, 1);
-  const head = el('head');
-  head.style.opacity = headProg.toFixed(3);
-  head.style.transform = `translateY(${(1 - easeOut(headProg)) * 3}vh)`;
+const sp = { v: 0 };
+tl.to(sp, { v: F.score || 0, duration: INTRO, ease: 'power2.out',
+  onUpdate: () => { el('scoreNum').textContent = String(Math.round(sp.v)); } }, 0);
 
-  // One card visible at a time: fade in at the start of its window, fade out
-  // at the end. Fixed viewport, so no overlap. Also drives the "n / total".
+cards.forEach((card, i) => {
+  const at = INTRO + i * PER;
+  tl.fromTo(card, { autoAlpha: 0, y: 24 }, { autoAlpha: 1, y: 0, duration: 0.45, ease: 'power2.out' }, at);
+  tl.to(card, { autoAlpha: 0, duration: 0.4 }, at + PER - 0.4);
+});
+
+tl.to('#bar', { width: '100%', duration: DURATION, ease: 'none' }, 0);
+
+// "n / total" counter, recomputed on every seek.
+tl.eventCallback('onUpdate', () => {
+  const t = tl.time();
   let active = -1;
-  cards.forEach(({ card, appearAt }, i) => {
-    const local = t - appearAt;            // seconds into this card's window
-    const fadeIn = clamp(local / 0.45, 0, 1);
-    const fadeOut = 1 - clamp((local - (PER - 0.45)) / 0.45, 0, 1);
-    const vis = Math.min(fadeIn, fadeOut);
-    card.style.opacity = vis.toFixed(3);
-    card.style.transform = `translateY(calc(-50% + ${(1 - easeOut(fadeIn)) * 3}vh))`;
-    if (local >= 0 && local < PER) active = i;
-  });
+  cards.forEach((_, i) => { const at = INTRO + i * PER; if (t >= at && t < at + PER) active = i; });
   el('counter').textContent = active >= 0 ? `${active + 1} / ${cards.length}` : '';
+});
 
-  // Progress bar.
-  el('bar').style.width = (clamp(t / DURATION, 0, 1) * 100).toFixed(2) + '%';
+window.__timelines = window.__timelines || {};
+window.__timelines['main'] = tl;
+
+// Dev preview only (never under the renderer, which seeks the paused timeline).
+function underRenderer() {
+  return !!(window.__hfSeekAllAdapters || window.__hf || window.__hyperframes || window.__hyperframes_config);
 }
-
-const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
-const easeOut = (x) => 1 - Math.pow(1 - x, 3);
-function escapeHtml(s) {
-  return String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
-}
-
-// HyperFrames drives the clock. The first hf-seek means the renderer is
-// present — latch `driven` so the dev preview loop below never competes with
-// capture (init() runs synchronously, before window.__hf is set, so a
-// load-time check isn't enough for determinism).
-let driven = false;
-window.addEventListener('hf-seek', (e) => { driven = true; renderFrame(e.detail.time); });
-window.renderFrame = (t) => { driven = true; renderFrame(t); };
-
-init();
-
-// Dev preview when opened directly in a browser. Bails the moment ANY sign of
-// the HyperFrames renderer appears — either an hf-seek fired (`driven`) or the
-// renderer installed its seek helper (`__hfSeekAllAdapters`). Checked every
-// tick so it can't race capture in a second render worker (determinism).
-function renderPresent() {
-  return driven || window.__hfSeekAllAdapters || window.__hf ||
-    window.__hyperframes || window.__hyperframes_config;
-}
-const previewStart = performance.now();
-(function tick() {
-  if (renderPresent()) return;
-  renderFrame(((performance.now() - previewStart) / 1000) % (DURATION + 1));
-  requestAnimationFrame(tick);
-})();
+if (!underRenderer()) { tl.repeat(-1); tl.play(); }
 </script>
 </body>
 </html>
