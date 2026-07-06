@@ -17,6 +17,7 @@ import {
   Clip,
   AudioClip,
   MidiClip,
+  ClipSlot,
   Track,
   AudioTrack,
   MidiTrack,
@@ -72,8 +73,8 @@ export interface SelectionContext {
  */
 export async function getSelection(targetArg: unknown): Promise<SelectionContext> {
   if (isArrangementSelection(targetArg)) {
-    const start = targetArg.time_selection_start;
-    const end = targetArg.time_selection_end;
+    const start = num(targetArg.time_selection_start);
+    const end = num(targetArg.time_selection_end);
     const tracks = targetArg.selected_lanes.map((h) =>
       ctx.getObjectFromHandle(h, Track<V>),
     );
@@ -91,18 +92,22 @@ export async function getSelection(targetArg: unknown): Promise<SelectionContext
   if (isClipSlotSelection(targetArg)) {
     // MVP: take the first slot that holds a clip.
     for (const h of targetArg.selected_clip_slots) {
-      const slot = ctx.getObjectFromHandle(h, DataModelObject<V>) as any;
-      if (slot.clip) return clipSelection(slot.clip as Clip<V>);
+      const slot = ctx.getObjectFromHandle(h, ClipSlot<V>);
+      if (slot.clip) return clipSelection(slot.clip);
     }
     throw new Error('No clip in the selected clip slots.');
   }
 
   const obj = ctx.getObjectFromHandle(targetArg as Handle, DataModelObject<V>);
   if (obj instanceof Clip) return clipSelection(obj);
+  if (obj instanceof ClipSlot) {
+    if (!obj.clip) throw new Error('The clicked clip slot is empty.');
+    return clipSelection(obj.clip);
+  }
   if (obj instanceof Track) {
     const clips = obj.arrangementClips;
-    const start = clips.length ? Math.min(...clips.map((c) => c.startTime)) : 0;
-    const end = clips.length ? Math.max(...clips.map((c) => c.endTime)) : 0;
+    const start = clips.length ? Math.min(...clips.map((c) => num(c.startTime))) : 0;
+    const end = clips.length ? Math.max(...clips.map((c) => num(c.endTime))) : 0;
     return {
       scope: 'track',
       clipName: obj.name,
@@ -124,7 +129,7 @@ function clipSelection(clip: Clip<V>): SelectionContext {
     isMidi: clip instanceof MidiClip,
     // Session clips: region is the clip content itself, anchored at beat 0.
     startBeat: 0,
-    durationBeats: clip.duration,
+    durationBeats: num(clip.duration),
     clip,
   };
 }
@@ -133,7 +138,7 @@ function clipSelection(clip: Clip<V>): SelectionContext {
 
 export async function getTempoMap(): Promise<TempoPoint[]> {
   // Static tempo only in SDK 1.0.0-beta.0 (VERIFY 3) — one-point map.
-  return [{ beat: 0, bpm: ctx.application.song.tempo }];
+  return [{ beat: 0, bpm: num(ctx.application.song.tempo, 120) }];
 }
 
 export async function getTimeSignatures(): Promise<TimeSignature[]> {
@@ -153,10 +158,10 @@ export async function getNotes(sel: SelectionContext): Promise<Note[]> {
     for (const track of sel.tracks ?? []) {
       if (!(track instanceof MidiTrack)) continue;
       for (const clip of track.arrangementClips) {
-        if (clip.endTime <= sel.startBeat) continue;
-        if (clip.startTime >= sel.startBeat + sel.durationBeats) continue;
+        if (num(clip.endTime) <= sel.startBeat) continue;
+        if (num(clip.startTime) >= sel.startBeat + sel.durationBeats) continue;
         if (!(clip instanceof MidiClip)) continue;
-        collectClipNotes(clip, clip.startTime - sel.startBeat, trackId(track), collected);
+        collectClipNotes(clip, num(clip.startTime) - sel.startBeat, trackId(track), collected);
       }
     }
   }
@@ -172,11 +177,11 @@ function collectClipNotes(
   for (const n of clip.notes) {
     if (n.muted) continue;
     out.push({
-      pitch: n.pitch,
-      startBeat: n.startTime + offsetBeats, // NoteDescription times are in beats
-      lengthBeats: n.duration,
+      pitch: num(n.pitch),
+      startBeat: num(n.startTime) + offsetBeats, // NoteDescription times are in beats
+      lengthBeats: num(n.duration),
       velocity: clampVelocity(n.velocity),
-      probability: n.probability,
+      ...(n.probability !== undefined ? { probability: num(n.probability) } : {}),
       ...(tid ? { trackId: tid } : {}),
     });
   }
@@ -193,6 +198,7 @@ export async function getAutomation(
 export async function getMarkers(sel: SelectionContext): Promise<Marker[]> {
   if (sel.scope === 'clip') return [];
   return ctx.application.song.cuePoints
+    .map((c) => ({ time: num(c.time), name: c.name }))
     .filter((c) => c.time >= sel.startBeat && c.time < sel.startBeat + sel.durationBeats)
     .map((c) => ({ beat: c.time - sel.startBeat, label: c.name, kind: 'section' as const }));
 }
@@ -222,21 +228,37 @@ export async function getWarpMarkers(clip: AudioClip<V>): Promise<WarpMarker[]> 
  * outcome in DECISIONS.md.
  */
 export async function bounceAudio(sel: SelectionContext, outPath: string): Promise<string | null> {
+  // Candidate render sources, best first. The M1 experiment: does
+  // renderPreFxAudio accept the main track (full mix), or only real
+  // AudioTracks? We now find out from the logged errors instead of guessing.
+  const candidates: { label: string; track: AudioTrack<V> }[] = [];
   try {
-    const main = ctx.application.song.mainTrack;
-    const rendered = await ctx.resources.renderPreFxAudio(
-      main as AudioTrack<V>,
-      sel.startBeat,
-      sel.startBeat + sel.durationBeats,
-    );
-    if (rendered !== outPath) {
-      const fs = await import('node:fs/promises');
-      await fs.copyFile(rendered, outPath);
-    }
-    return outPath;
-  } catch {
-    return null;
+    candidates.push({ label: 'mainTrack', track: ctx.application.song.mainTrack as AudioTrack<V> });
+  } catch (e) {
+    console.error('bounce: mainTrack unavailable:', e);
   }
+  for (const t of sel.tracks ?? []) {
+    if (t instanceof AudioTrack) candidates.push({ label: `audioTrack ${t.name}`, track: t });
+  }
+
+  for (const c of candidates) {
+    try {
+      const rendered = await ctx.resources.renderPreFxAudio(
+        c.track,
+        sel.startBeat,
+        sel.startBeat + sel.durationBeats,
+      );
+      console.log(`bounce: rendered via ${c.label} → ${rendered}`);
+      if (rendered !== outPath) {
+        const fs = await import('node:fs/promises');
+        await fs.copyFile(rendered, outPath);
+      }
+      return outPath;
+    } catch (e) {
+      console.error(`bounce: renderPreFxAudio failed via ${c.label}:`, (e as Error)?.message ?? e);
+    }
+  }
+  return null;
 }
 
 /** Copy a finished file (the MP4) into the Live project; returns the imported path. */
@@ -263,6 +285,8 @@ export async function registerStudioAction(
   const SCOPES: ContextMenuScope<V>[] = [
     'MidiClip',
     'AudioClip',
+    'ClipSlot',
+    'ClipSlotSelection', // Session View: right-click on clip(s) in the grid
     'MidiTrack',
     'AudioTrack',
     'MidiTrack.ArrangementSelection',
@@ -270,7 +294,16 @@ export async function registerStudioAction(
   ];
   ctx.commands.registerCommand(commandId, (...args: unknown[]) => onInvoke(args[0]));
   const unregisters = await Promise.all(
-    SCOPES.map((scope) => ctx.ui.registerContextMenuAction(scope, title, commandId)),
+    SCOPES.map(async (scope) => {
+      try {
+        const unregister = await ctx.ui.registerContextMenuAction(scope, title, commandId);
+        console.log(`registered context-menu action on ${scope}`);
+        return unregister;
+      } catch (e) {
+        console.error(`context-menu registration FAILED on ${scope}:`, e);
+        throw e;
+      }
+    }),
   );
   return async () => {
     await Promise.all(unregisters.map((u) => u()));
@@ -299,14 +332,31 @@ export async function showStudioDialog(
  */
 export async function withProgress<T>(
   text: string,
-  fn: (report: (pct: number, text?: string) => void, signal: AbortSignal) => Promise<T>,
+  fn: (report: (pct: number | undefined, text?: string) => void, signal: AbortSignal) => Promise<T>,
 ): Promise<T> {
+  // progress === undefined → indeterminate bar (the host reads a "has progress"
+  // flag). Start indeterminate; callers set a number once they have one.
   return (await ctx.ui.withinProgressDialog(
     text,
-    { progress: 0 },
+    {},
     (update, signal) =>
       fn((pct, newText) => void update(newText ?? text, pct), signal),
   )) as T;
+}
+
+/** Reveal a file in Finder (macOS) / Explorer, or open it with the default app. */
+export async function revealFile(filePath: string): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const cmd = process.platform === 'darwin' ? ['open', ['-R', filePath]]
+    : process.platform === 'win32' ? ['explorer', [`/select,${filePath}`]]
+    : ['xdg-open', [filePath]];
+  spawn(cmd[0] as string, cmd[1] as string[], { detached: true, stdio: 'ignore' }).unref();
+}
+
+export async function openFile(filePath: string): Promise<void> {
+  const { spawn } = await import('node:child_process');
+  const bin = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
+  spawn(bin, [filePath], { detached: true, stdio: 'ignore', shell: process.platform === 'win32' }).unref();
 }
 
 // ---------------------------------------------------------------- helpers
@@ -319,12 +369,22 @@ function isClipSlotSelection(x: unknown): x is ClipSlotSelection {
   return !!x && typeof x === 'object' && 'selected_clip_slots' in x;
 }
 
-function colorToHex(c: number): string {
-  return '#' + (c >>> 0).toString(16).padStart(6, '0').slice(-6);
+/**
+ * RUNTIME REALITY (found in Live 12.4.5b6): integer values cross the bindings
+ * as BigInt even where the TypeDoc says number (first seen: Clip.color).
+ * Coerce every integral read through num() before math or JSON.stringify —
+ * a stray BigInt in the timeline would also crash serialization.
+ */
+function num(v: number | bigint | undefined, fallback = 0): number {
+  return v === undefined ? fallback : Number(v);
 }
 
-function clampVelocity(v: number | undefined): number {
-  return Math.min(127, Math.max(1, Math.round(v ?? 100)));
+function colorToHex(c: number | bigint): string {
+  return '#' + (num(c) & 0xffffff).toString(16).padStart(6, '0');
+}
+
+function clampVelocity(v: number | bigint | undefined): number {
+  return Math.min(127, Math.max(1, Math.round(num(v, 100))));
 }
 
 function trackId(t: Track<V>): string {

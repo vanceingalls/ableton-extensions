@@ -184,6 +184,48 @@ Results:
 - `stageBundle` patches `data-duration/width/height` into index.html —
   HyperFrames reads them from the composition, not from CLI flags.
 
+### 2026-07-05 — M1 RUNS INSIDE LIVE (12.4.5b6 dev mode)
+
+The extension loads and the full path works end-to-end in Live: right-click a
+MIDI clip → "Render Video…" → dialog → Render → MP4 imported into the project
+(`…/Live Recordings/<project>/Samples/Imported/output.mp4`). Hard-won findings:
+
+- **`package.json` needs `"main": "dist/extension.js"`** or `extensions-cli
+  run` silently fails the control-channel handshake (host bring-up timeout).
+- **Killing the dev host orphans Live's dev-mode connection** → subsequent
+  `run` gets "bring-up timed out". Reset: toggle Developer Mode off/on (or
+  restart Live). No programmatic reset. Painful iteration tax.
+- **Integers arrive as BigInt** across the bindings even where TypeDoc says
+  `number` (Clip.color, note times, tempo…). Coerce everything through
+  `num()` in liveAdapter or math/JSON.stringify throws
+  "Cannot mix BigInt and other types". First real runtime surprise.
+- **Session-clip right-click fires the `ClipSlotSelection` scope** (and
+  `ClipSlot`), not `MidiClip`. Registered all of MidiClip/AudioClip/ClipSlot/
+  ClipSlotSelection/MidiTrack/AudioTrack/±ArrangementSelection to be safe.
+- **`showModalDialog` with `http://localhost` does NOT load** (white window,
+  resolves instantly with empty payload) despite the docs listing it as an
+  allowed scheme. The SDK's own modal-dialog example uses a **`data:` URL**;
+  that works. So M1 uses a self-contained data-URL dialog: inject the timeline
+  in, get the render request out via `close_and_send`. The loopback
+  studioServer.ts is kept for M3 (live preview needs a transport) but is
+  currently unused by main.ts. Retest http://localhost per SDK release.
+- **`renderPreFxAudio(song.mainTrack)` fails** (error is `undefined` — the
+  reject carries no message). So the full-mix bounce trick does NOT work in
+  this build; VERIFY 1's optimistic path is dead. v1 renders silent unless we
+  find another bounce route (per-AudioTrack works in principle, untested) or
+  the user exports audio manually. bounceAudio now tries mainTrack then any
+  selected AudioTrack, logging each failure.
+- **Data-URL injection must stay valid JS before and after substitution** —
+  a dangling fallback object after the injected JSON was a syntax error that
+  silently killed the whole page script (dead dropdown + dead buttons, but the
+  static shell still rendered, so it looked "almost working").
+- Local render from inside Live works because the dev host inherits the PATH I
+  launched it with (Chrome + `~/.local/bin` ffmpeg). The **shipped** `.ablx`
+  won't have that — production requires the cloud path (needs HEYGEN_API_KEY).
+- Menu renamed **"Render Video…"** (was "Open HyperFrames Studio…") — at M1 it
+  is a render dialog, not yet the live studio. The studio (preview, scrub,
+  mappings, refresh-from-Set) is still M3.
+
 ## Manual test matrix (§11) — fill in during M1/M2
 
 | Scope | Constant tempo | Tempo changes | Empty automation |

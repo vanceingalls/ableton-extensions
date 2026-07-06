@@ -2,43 +2,40 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>HyperFrames Studio</title>
+<title>Render Video</title>
 <style>
-  /* Live-ish flat grays; the clip's own color is the only accent (§5.4). */
-  :root { --accent: #ff5722; }
+  /* Live dark theme; the clip's own color is the only accent (§5.4). */
+  :root { --accent: #ff9d4d; }
   * { box-sizing: border-box; margin: 0; }
   html, body { height: 100%; }
   body {
-    background: #2b2b2b; color: #d6d6d6;
-    font: 13px/1.45 -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
-    display: flex; flex-direction: column; padding: 14px; gap: 12px;
+    background: hsl(0,0%,21%); color: hsl(0,0%,71%);
+    font: 12px/1.45 -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; padding: 16px; gap: 12px;
   }
-  h1 { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  h1 .swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); display: inline-block; }
-  .meta { color: #9a9a9a; font-size: 12px; }
-  fieldset { border: 1px solid #3d3d3d; border-radius: 6px; padding: 10px 12px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-  legend { color: #9a9a9a; padding: 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  h1 { font-size: 14px; font-weight: 600; color: #e8e8e8; display: flex; align-items: center; gap: 8px; }
+  h1 .swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); }
+  .meta { color: hsl(0,0%,50%); }
+  fieldset { border: 1px solid hsl(0,0%,12%); border-radius: 6px; padding: 10px 12px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+  legend { color: hsl(0,0%,45%); padding: 0 6px; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
   label { display: flex; align-items: center; gap: 6px; }
   select {
-    background: #1f1f1f; color: #d6d6d6; border: 1px solid #3d3d3d;
+    background: hsl(0,0%,12%); color: hsl(0,0%,80%); border: 1px solid hsl(0,0%,7%);
     border-radius: 4px; padding: 4px 8px; font: inherit;
   }
+  .note { color: hsl(31,60%,60%); font-size: 11px; }
   button {
-    background: #3d3d3d; color: #e8e8e8; border: 1px solid #4a4a4a;
-    border-radius: 5px; padding: 7px 16px; font: inherit; cursor: pointer;
+    background: hsl(0,0%,16%); color: hsl(0,0%,80%); border: 1px solid hsl(0,0%,7%);
+    border-radius: 12px; padding: 6px 18px; font: inherit; cursor: pointer;
   }
-  button:hover { background: #474747; }
-  button.primary { background: var(--accent); border-color: transparent; color: #111; font-weight: 600; }
-  button:disabled { opacity: .45; cursor: default; }
-  #status { min-height: 2.6em; color: #9a9a9a; white-space: pre-line; }
-  #status.error { color: #ff8a65; }
-  progress { width: 100%; height: 6px; accent-color: var(--accent); }
+  button:hover { background: hsl(0,0%,20%); }
+  button.primary { background: var(--accent); border-color: transparent; color: #1a1200; font-weight: 600; }
   .spacer { flex: 1; }
-  footer { display: flex; gap: 10px; align-items: center; }
+  footer { display: flex; gap: 10px; align-items: center; margin-top: auto; }
 </style>
 </head>
 <body>
-  <h1><span class="swatch" id="swatch"></span><span id="title">Connecting to Live…</span></h1>
+  <h1><span class="swatch"></span><span id="title">Render Video</span></h1>
   <div class="meta" id="meta"></div>
 
   <fieldset>
@@ -50,105 +47,60 @@
     <label>FPS <select id="fps"><option>30</option><option>60</option></select></label>
   </fieldset>
 
-  <div id="status">Waiting for the exported timeline…</div>
-  <progress id="bar" max="100" value="0" hidden></progress>
+  <div class="note" id="note"></div>
 
-  <div class="spacer"></div>
   <footer>
-    <button id="refresh">Refresh from Set</button>
     <span class="spacer"></span>
-    <button id="close">Close</button>
-    <button id="render" class="primary" disabled>Render</button>
+    <button id="cancel">Cancel</button>
+    <button id="render" class="primary">Render</button>
   </footer>
 
 <script>
-/**
- * Minimal M1 studio: talks studioProtocol over the loopback bridge
- * (EventSource on ./__events, POST on ./__message — see src/studioServer.ts).
- * The full M3 studio (template preview, dual ruler, mapping rows) builds on
- * this page; the old mapping-row prototype lives in git history.
- */
-const $ = (id) => document.getElementById(id);
-let timeline = null;
+// The Node side replaces the `null` token below with the session JSON before
+// encoding this page as a data: URL. Valid syntax both before (null) and
+// after (an object literal) injection.
+const INJECTED = null /*__STUDIO_DATA__*/;
+const STUDIO = INJECTED || { timeline: null, availableStyles: [], audioAvailable: false };
 
-const post = (msg) =>
-  fetch('./__message', { method: 'POST', body: JSON.stringify(msg) }).catch(() => {});
-
-const events = new EventSource('./__events');
-events.onmessage = (e) => handle(JSON.parse(e.data));
-events.onopen = () => post({ type: 'ready' });
-events.onerror = () => setStatus('Bridge connection lost — close and reopen the studio.', true);
-
-function handle(msg) {
-  switch (msg.type) {
-    case 'init':
-      $('style').replaceChildren(...msg.availableStyles.map((s) => {
-        const o = document.createElement('option');
-        o.value = s.id;
-        o.textContent = s.manifest.displayName ?? s.id;
-        return o;
-      }));
-      applyTimeline(msg.timeline);
-      if (!msg.audioUrl) {
-        setStatus('Audio bounce unavailable — render will need a manual export (File > Export Audio/Video).');
-      }
-      break;
-    case 'timelineUpdated':
-      applyTimeline(msg.timeline);
-      setStatus('Refreshed from Set.');
-      break;
-    case 'renderProgress':
-      $('bar').hidden = false;
-      $('bar').value = msg.pct;
-      setStatus(`Rendering — ${msg.phase} ${Math.round(msg.pct)}%`);
-      break;
-    case 'renderDone':
-      $('bar').hidden = true;
-      setStatus(`Done. Delivered (${msg.deliveredAs}):\n${msg.ref}`);
-      break;
-    case 'renderError':
-      $('bar').hidden = true;
-      setStatus(msg.message, true);
-      break;
-  }
+function send(result) {
+  const msg = { method: 'close_and_send', params: [JSON.stringify(result)] };
+  const mac = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.live;
+  const win = window.chrome && window.chrome.webview;
+  if (mac) mac.postMessage(msg);
+  else if (win) win.postMessage(msg);
 }
 
-function applyTimeline(t) {
-  timeline = t;
-  const accent = t.meta.clipColor || '#ff5722';
+const $ = (id) => document.getElementById(id);
+
+if (STUDIO.timeline) {
+  const t = STUDIO.timeline;
+  const accent = (t.meta && t.meta.clipColor) || '#ff9d4d';
   document.documentElement.style.setProperty('--accent', accent);
-  $('title').textContent = t.meta.title;
+  $('title').textContent = t.meta.title || 'Untitled clip';
   $('meta').textContent =
     `${t.meta.sourceScope} · ${t.timing.tempoMap[0].bpm} BPM · ` +
     `${t.timing.durationBeats} beats (${t.audio.durationSeconds.toFixed(2)}s) · ` +
     `${t.notes.length} notes · ${t.markers.length} markers`;
-  $('render').disabled = false;
-  setStatus('Timeline exported from the Set. Ready to render.');
+  $('style').replaceChildren(...STUDIO.availableStyles.map((s) => {
+    const o = document.createElement('option');
+    o.value = s.id; o.textContent = (s.manifest && s.manifest.displayName) || s.id;
+    return o;
+  }));
+  if (!STUDIO.audioAvailable) {
+    $('note').textContent =
+      'No bounced audio — this SDK build can’t render the mix programmatically. ' +
+      'The video will render silent; export audio manually to add the track.';
+  }
 }
 
-function setStatus(text, isError) {
-  $('status').textContent = text;
-  $('status').className = isError ? 'error' : '';
-}
-
-$('refresh').onclick = () => { setStatus('Re-reading the Set…'); post({ type: 'refreshFromSet' }); };
-$('render').onclick = () =>
-  post({
-    type: 'requestRender',
-    style: $('style').value,
-    aspect: $('aspect').value,
-    fps: Number($('fps').value),
-    mappings: [], // no automation lanes in SDK 1.0.0-beta.0 (see DECISIONS.md)
-  });
-$('close').onclick = () => {
-  // Official close: hand the host a result string; Live closes the dialog.
-  const payload = JSON.stringify({ closedBy: 'user' });
-  const macos = window.webkit?.messageHandlers?.live;
-  const winrt = window.chrome?.webview;
-  if (macos) macos.postMessage({ method: 'close_and_send', params: [payload] });
-  else if (winrt) winrt.postMessage({ method: 'close_and_send', params: [payload] });
-  else setStatus('Not inside Live — close the tab instead.');
-};
+$('render').onclick = () => send({
+  action: 'render',
+  style: $('style').value,
+  aspect: $('aspect').value,
+  fps: Number($('fps').value),
+});
+$('cancel').onclick = () => send({ action: 'cancel' });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') send({ action: 'cancel' }); });
 </script>
 </body>
 </html>

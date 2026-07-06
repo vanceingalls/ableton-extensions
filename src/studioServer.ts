@@ -55,7 +55,7 @@ export async function startStudioServer(opts: StudioServerOptions): Promise<Stud
   const handlers = new Set<(msg: WebViewToNode) => void>();
   const sseClients = new Set<http.ServerResponse>();
 
-  const server = http.createServer(async (req, res) => {
+  const handler = async (req: http.IncomingMessage, res: http.ServerResponse) => {
     try {
       const url = new URL(req.url ?? '/', 'http://127.0.0.1');
       const [, reqToken, ...rest] = url.pathname.split('/');
@@ -104,14 +104,28 @@ export async function startStudioServer(opts: StudioServerOptions): Promise<Stud
     } catch (err: any) {
       res.writeHead(err?.code === 'ENOENT' ? 404 : 500).end();
     }
-  });
+  };
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  // Live's WebView allowlist admits "http://localhost" URLs (SDK docs), and
+  // macOS resolves localhost to ::1 and/or 127.0.0.1 — so bind BOTH loopback
+  // families on the same port and advertise the literal hostname localhost.
+  const server = http.createServer(handler);
+  await new Promise<void>((resolve, reject) =>
+    server.listen(0, '127.0.0.1').once('listening', resolve).once('error', reject),
+  );
   const address = server.address();
   if (address === null || typeof address !== 'object') throw new Error('studio server failed to bind');
 
+  const server6 = http.createServer(handler);
+  await new Promise<void>((resolve) =>
+    server6
+      .listen(address.port, '::1')
+      .once('listening', resolve)
+      .once('error', () => resolve()), // IPv6 loopback is best-effort
+  );
+
   return {
-    url: `http://127.0.0.1:${address.port}/${token}/`,
+    url: `http://localhost:${address.port}/${token}/`,
     send(msg) {
       const frame = `data: ${JSON.stringify(msg)}\n\n`;
       for (const client of sseClients) client.write(frame);
@@ -122,9 +136,10 @@ export async function startStudioServer(opts: StudioServerOptions): Promise<Stud
     close() {
       for (const client of sseClients) client.end();
       sseClients.clear();
-      return new Promise((resolve, reject) =>
-        server.close((err) => (err ? reject(err) : resolve())),
-      );
+      return new Promise((resolve, reject) => {
+        server6.close();
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
     },
   };
 }

@@ -2,6 +2,7 @@
   "name": "clip2video",
   "version": "0.1.0",
   "private": true,
+  "main": "dist/extension.js",
   "description": "Ableton Live Extension: render deterministic, music-locked MP4s via HyperFrames",
   "scripts": {
     "test": "vitest run",

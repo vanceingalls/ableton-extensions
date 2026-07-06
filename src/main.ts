@@ -15,16 +15,10 @@
 
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { exportSelection, type ExportResult } from './exporter';
-import { renderCloud } from './render';
-import { startStudioServer } from './studioServer';
-import {
-  STUDIO_PROTOCOL_VERSION,
-  type NodeToWebView,
-  type StyleInfo,
-  type RequestRenderMsg,
-} from './studioProtocol';
-import type { RenderRequest } from './types';
+import { exportSelection } from './exporter';
+import { renderCloud, renderLocal } from './render';
+import { type StyleInfo } from './studioProtocol';
+import type { RenderRequest, Timeline } from './types';
 import * as live from './liveAdapter';
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates');
@@ -39,124 +33,154 @@ const DEFAULT_REQUEST: RenderRequest = {
 };
 
 export async function activate(activation: unknown): Promise<void> {
-  live.bindActivation(activation);
-  // Registers the command + context-menu action on all six scopes that map
-  // to our clip/track/arrangement model (see liveAdapter.registerStudioAction).
-  await live.registerStudioAction(
-    'Open HyperFrames Studio…',
-    'clip2video.openStudio',
-    (targetArg) => void runStudioSession(targetArg),
-  );
+  console.log('activate: entered');
+  try {
+    live.bindActivation(activation);
+    console.log('activate: SDK initialized');
+    // Registers the command + context-menu action on all six scopes that map
+    // to our clip/track/arrangement model (see liveAdapter.registerStudioAction).
+    await live.registerStudioAction(
+      'Render Video…',
+      'clip2video.openStudio',
+      (targetArg) => {
+        console.log('command invoked, target:', JSON.stringify(targetArg, (_k, v) => (typeof v === 'bigint' ? String(v) : v)));
+        void runStudioSession(targetArg).catch((e) => console.error('studio session failed:', e));
+      },
+    );
+    console.log('activate: context-menu actions registered on all scopes');
+  } catch (e) {
+    console.error('activate FAILED:', e);
+    throw e;
+  }
+}
+
+interface StudioResult {
+  action: 'render' | 'cancel';
+  style?: string;
+  aspect?: RenderRequest['aspect'];
+  fps?: RenderRequest['fps'];
 }
 
 /**
  * One right-click → one studio session → done.
  *
- * The dialog only loads a URL and reports back when it closes (VERIFY 5
- * evidence), so all live traffic rides the loopback studio server: SSE for
- * Node→WebView pushes, POST for WebView→Node messages. The server serves the
- * studio HTML and the bounced audio, and lives exactly as long as the dialog.
+ * The dialog is a self-contained data: URL (the SDK's proven path — an
+ * http://localhost page does not load in the WebView). We inject the exported
+ * timeline into the studio HTML, show it, and get the render request back via
+ * the dialog's close_and_send payload. Live's live-preview refresh loop (§7)
+ * is M3 and will need the server transport; M1 is one request/response.
  */
 async function runStudioSession(targetHandle: unknown): Promise<void> {
   const sel = await live.getSelection(targetHandle);
-  let result = await exportSelection(sel, DEFAULT_REQUEST);
+  console.log(`selection: ${sel.scope} "${sel.clipName}" ${sel.durationBeats} beats, midi=${sel.isMidi}`);
+  const exported = await exportSelection(sel, DEFAULT_REQUEST);
+  console.log(`exported ${exported.timeline.notes.length} notes; audio: ${exported.audioPath ?? 'UNAVAILABLE (silent render)'}`);
   const styles = await loadStyles();
 
-  const server = await startStudioServer({
-    studioDir: path.dirname(STUDIO_HTML),
-    extraFiles: result.audioPath ? { 'audio.wav': result.audioPath } : {},
-  });
-  const send = (msg: NodeToWebView) => server.send(msg);
+  const dataUrl = await buildStudioDataUrl(exported.timeline, styles, !!exported.audioPath);
+  const payload = await live.showStudioDialog(dataUrl, 620, 380);
+  console.log('studio closed, payload:', payload);
 
-  server.onMessage(async (msg) => {
-    switch (msg.type) {
-      case 'ready':
-        send({
-          type: 'init',
-          protocolVersion: STUDIO_PROTOCOL_VERSION,
-          timeline: result.timeline,
-          audioUrl: result.audioPath ? './audio.wav' : '',
-          availableStyles: styles,
-        });
-        break;
-
-      case 'refreshFromSet':
-        // The signature interaction (§7): re-read the Set through the live
-        // handles and push a fresh timeline; the producer's loop is seconds.
-        result = await exportSelection(sel, DEFAULT_REQUEST);
-        send({ type: 'timelineUpdated', timeline: result.timeline });
-        break;
-
-      case 'requestRender':
-        await handleRender(msg, sel, send);
-        break;
-
-      case 'cancelRender':
-        // TODO(M2): thread an AbortSignal through renderCloud.
-        break;
-
-      case 'closeStudio':
-        // The WebView can't close its own dialog via the server; the studio
-        // UI instructs the user, and the SDK close payload ends the session.
-        break;
-    }
-  });
-
+  let choice: StudioResult;
   try {
-    // Blocks until the user closes the dialog (the close payload is unused
-    // for now; final settings travel over the server instead).
-    await live.showStudioDialog(server.url, 960, 640);
-  } finally {
-    await server.close();
+    choice = JSON.parse(payload) as StudioResult;
+  } catch {
+    return; // dialog dismissed without a decision
+  }
+  if (choice.action !== 'render') return;
+
+  await handleRender(sel, {
+    aspect: choice.aspect ?? DEFAULT_REQUEST.aspect,
+    fps: choice.fps ?? DEFAULT_REQUEST.fps,
+    style: choice.style ?? DEFAULT_REQUEST.style,
+    mappings: [],
+    useCloud: true,
+  });
+}
+
+/** Read the studio HTML, inject the session data, return a data: URL. */
+async function buildStudioDataUrl(
+  timeline: Timeline,
+  availableStyles: StyleInfo[],
+  audioAvailable: boolean,
+): Promise<string> {
+  const html = await fs.readFile(STUDIO_HTML, 'utf8');
+  const injected = html.replace(
+    'null /*__STUDIO_DATA__*/',
+    JSON.stringify({ timeline, availableStyles, audioAvailable }),
+  );
+  return 'data:text/html,' + encodeURIComponent(injected);
+}
+
+async function handleRender(sel: live.SelectionContext, req: RenderRequest): Promise<void> {
+  const result = await exportSelection(sel, req);
+  const job = {
+    workDir: result.workDir,
+    templateDir: path.join(TEMPLATES_DIR, req.style),
+    timeline: result.timeline,
+  };
+  const apiKey = process.env.HEYGEN_API_KEY ?? process.env.HYPERFRAMES_API_KEY;
+  try {
+    const mp4 = await live.withProgress('Rendering with HyperFrames…', (report, signal) =>
+      apiKey
+        ? renderCloud(job, apiKey, (phase, pct) => report(pct, phase), signal)
+        : // No cloud key configured — render locally (needs Chrome + ffmpeg on
+          // the host's PATH). This is the dev path; the shipped extension will
+          // require a key. Determinism/sync already verified for this path.
+          // Local render is opaque, so leave the bar indeterminate (undefined).
+          (report(undefined, 'Rendering locally…'), renderLocal(job)),
+    );
+    // VERIFY 7: import the MP4 into the Live project so the user owns it.
+    const delivered = await live.deliverIntoProject(mp4);
+    console.log('render delivered:', delivered);
+    const action = await live.showStudioDialog(doneDialogUrl(delivered), 560, 260).catch(() => 'ok');
+    if (action === 'reveal') await live.revealFile(delivered);
+    else if (action === 'open') await live.openFile(delivered);
+  } catch (err) {
+    console.error('render failed:', (err as Error)?.message ?? err);
+    await live
+      .showStudioDialog(errorDialogUrl(String((err as Error)?.message ?? err)), 520, 240)
+      .catch(() => {});
   }
 }
 
-async function handleRender(
-  msg: RequestRenderMsg,
-  sel: live.SelectionContext,
-  send: (m: NodeToWebView) => void,
-): Promise<void> {
-  try {
-    const req: RenderRequest = {
-      aspect: msg.aspect,
-      fps: msg.fps,
-      style: msg.style,
-      mappings: msg.mappings,
-      useCloud: true,
-    };
-    const result = await exportSelection(sel, req);
-    if (!result.audioPath) {
-      send({
-        type: 'renderError',
-        message:
-          'Audio bounce is not available in this SDK build — export audio ' +
-          'manually (File > Export Audio/Video) and retry. (VERIFY item 1)',
-      });
-      return;
-    }
+function doneDialogUrl(deliveredPath: string): string {
+  const send = (r: string) =>
+    `(window.webkit?.messageHandlers?.live||window.chrome?.webview).postMessage({method:'close_and_send',params:['${r}']})`;
+  const btn = (label: string, r: string, primary = false) =>
+    `<button style="padding:6px 18px;border-radius:12px;border:1px solid hsl(0,0%,7%);font:inherit;cursor:pointer;` +
+    `background:${primary ? '#ff9d4d' : 'hsl(0,0%,16%)'};color:${primary ? '#1a1200' : 'inherit'};` +
+    `${primary ? 'font-weight:600' : ''}" onclick="${send(r)}">${label}</button>`;
+  const html =
+    `<!doctype html><meta charset=utf-8><body style="margin:0;background:hsl(0,0%,21%);color:hsl(0,0%,71%);` +
+    `font:13px -apple-system,sans-serif;display:flex;flex-direction:column;gap:14px;padding:20px;` +
+    `height:100vh;box-sizing:border-box">` +
+    `<b style="color:#ff9d4d">Render complete</b>` +
+    `<div style="flex:1;white-space:pre-line;word-break:break-all">Imported into your project:\n${escapeHtml(deliveredPath)}</div>` +
+    `<div style="display:flex;gap:8px;justify-content:flex-end">` +
+    `${btn('Close', 'ok')}${btn('Reveal in Finder', 'reveal')}${btn('Open', 'open', true)}</div></body>`;
+  return 'data:text/html,' + encodeURIComponent(html);
+}
 
-    const mp4 = await live.withProgress('Rendering with HyperFrames…', (report, signal) =>
-      renderCloud(
-        {
-          workDir: result.workDir,
-          templateDir: path.join(TEMPLATES_DIR, msg.style),
-          timeline: result.timeline,
-        },
-        requireApiKey(),
-        (phase, pct) => {
-          report(pct, phase);
-          send({ type: 'renderProgress', phase, pct });
-        },
-        signal, // user cancel in Live's progress dialog aborts the cloud job
-      ),
-    );
+function errorDialogUrl(message: string): string {
+  return infoDialogUrl('Render failed', message);
+}
 
-    // VERIFY 7: import the MP4 into the Live project so the user owns it.
-    const delivered = await live.deliverIntoProject(mp4);
-    send({ type: 'renderDone', deliveredAs: 'imported', ref: delivered });
-  } catch (err) {
-    send({ type: 'renderError', message: String((err as Error)?.message ?? err) });
-  }
+function infoDialogUrl(heading: string, message: string): string {
+  const html =
+    `<!doctype html><meta charset=utf-8><body style="margin:0;background:hsl(0,0%,21%);` +
+    `color:hsl(0,0%,71%);font:13px -apple-system,sans-serif;display:flex;flex-direction:column;` +
+    `gap:14px;padding:20px;height:100vh;box-sizing:border-box">` +
+    `<b style="color:#ff9d4d">${escapeHtml(heading)}</b>` +
+    `<div style="flex:1;white-space:pre-line;word-break:break-all">${escapeHtml(message)}</div>` +
+    `<button style="align-self:flex-end;padding:6px 18px;border-radius:12px;border:1px solid hsl(0,0%,7%);` +
+    `background:hsl(0,0%,16%);color:inherit;font:inherit" onclick="(window.webkit?.messageHandlers?.live||window.chrome?.webview)` +
+    `.postMessage({method:'close_and_send',params:['ok']})">Close</button></body>`;
+  return 'data:text/html,' + encodeURIComponent(html);
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
 }
 
 /** Enumerate templates/<dir>/template.json manifests for the mapping UI. */
@@ -176,10 +200,3 @@ async function loadStyles(): Promise<StyleInfo[]> {
   return styles;
 }
 
-function requireApiKey(): string {
-  // Same resolution order as the hyperframes CLI. TODO(M3): read
-  // ~/.heygen/credentials too, and offer an account-link flow in the studio.
-  const key = process.env.HEYGEN_API_KEY ?? process.env.HYPERFRAMES_API_KEY;
-  if (!key) throw new Error('HyperFrames Cloud API key not configured (set HEYGEN_API_KEY).');
-  return key;
-}
