@@ -18,7 +18,6 @@ import {
   AudioClip,
   MidiClip,
   ClipSlot,
-  Scene,
   Track,
   AudioTrack,
   MidiTrack,
@@ -101,19 +100,6 @@ export async function getSelection(targetArg: unknown): Promise<SelectionContext
   }
 
   const obj = ctx.getObjectFromHandle(targetArg as Handle, DataModelObject<V>);
-  if (obj instanceof Scene) {
-    // Whole-project gesture: not tied to a clip. durationBeats 0 → callers
-    // that need a length compute it from all tracks (getProjectSummary does).
-    return {
-      scope: 'arrangement',
-      clipName: obj.name || 'Project',
-      clipColor: '#ff9d4d',
-      isMidi: false,
-      startBeat: 0,
-      durationBeats: 0,
-      tracks: [...ctx.application.song.tracks],
-    };
-  }
   if (obj instanceof Clip) return clipSelection(obj);
   if (obj instanceof ClipSlot) {
     if (!obj.clip) throw new Error('The clicked clip slot is empty.');
@@ -233,27 +219,37 @@ export async function getWarpMarkers(clip: AudioClip<V>): Promise<WarpMarker[]> 
 }
 
 /**
- * Compact, LLM-friendly description of the whole Set for the feedback feature.
- * Reads every track's arrangement clips: note counts, per-track color (from
- * clips), device (instrument/effect) names, and pitch range — no raw notes,
- * no audio. `sel` supplies the region length and scope label.
+ * Compact, LLM-friendly description of the SELECTION for the feedback feature:
+ * the selected tracks over the selected arrangement time range. Select all
+ * tracks across the whole song → whole-project review; select a range → that
+ * section. Reads note counts, per-track color, device names, pitch range — no
+ * raw notes, no audio.
  */
 export async function getProjectSummary(sel: SelectionContext): Promise<ProjectSummary> {
   const song = ctx.application.song;
-  const durationBeats = sel.durationBeats || regionFromTracks(song.tracks);
+  const scopeTracks = sel.tracks && sel.tracks.length ? sel.tracks : [...song.tracks];
+  const start = sel.startBeat;
+  const region = sel.durationBeats || regionFromTracks(scopeTracks) - start;
+  const end = start + region;
+
   const tracks: TrackSummary[] = [];
   let totalNotes = 0;
   let minPitch = Infinity;
   let maxPitch = -Infinity;
 
-  for (const track of song.tracks) {
+  for (const track of scopeTracks) {
     let noteCount = 0;
     let color: string | undefined;
     for (const clip of track.arrangementClips) {
+      const clipStart = num(clip.startTime);
+      const clipEnd = num(clip.endTime);
+      if (clipEnd <= start || clipStart >= end) continue; // outside the window
       if (color === undefined) color = colorToHex(clip.color);
       if (clip instanceof MidiClip) {
         for (const n of clip.notes) {
           if (n.muted) continue;
+          const abs = clipStart + num(n.startTime); // absolute arrangement beat
+          if (abs < start || abs >= end) continue;
           noteCount++;
           const p = num(n.pitch);
           if (p < minPitch) minPitch = p;
@@ -268,18 +264,20 @@ export async function getProjectSummary(sel: SelectionContext): Promise<ProjectS
       color,
       noteCount,
       devices: track.devices.map((d) => d.name),
-      density: durationBeats > 0 ? +(noteCount / durationBeats).toFixed(2) : 0,
+      density: region > 0 ? +(noteCount / region).toFixed(2) : 0,
     });
   }
 
+  const wholeSong = scopeTracks.length === song.tracks.length;
   return {
-    title: sel.clipName || 'Untitled Set',
+    title: wholeSong ? 'Full Project' : 'Arrangement Selection',
     tempoBpm: num(song.tempo, 120),
     timeSignature: '4/4', // no song-level signature in this SDK
-    durationBeats,
+    durationBeats: region,
     scope: sel.scope,
     sections: song.cuePoints
       .map((c) => ({ beat: num(c.time), label: c.name }))
+      .filter((c) => c.beat >= start && c.beat < end)
       .sort((a, b) => a.beat - b.beat),
     tracks,
     totalNotes,
@@ -372,7 +370,8 @@ export const CLIP_SCOPES: ContextMenuScope<V>[] = [
 ];
 
 export const PROJECT_SCOPES: ContextMenuScope<V>[] = [
-  'Scene', // Session View: the row spanning every track — the whole-project gesture
+  // Arrangement time-selection only: the selection itself defines the scope.
+  // Select across all tracks for the whole song, or a range for one section.
   'MidiTrack.ArrangementSelection',
   'AudioTrack.ArrangementSelection',
 ];

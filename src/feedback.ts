@@ -17,15 +17,16 @@ import { FEEDBACK_SCHEMA } from './feedbackTypes';
 const MODEL = 'claude-opus-4-8';
 
 const SYSTEM = `You are a seasoned music producer and mixing engineer giving a
-short, candid review of a work-in-progress Ableton Live project. You are given
-a structured summary of the Set (tracks, instruments, note densities, tempo,
-sections) — NOT the audio. Base your feedback only on what the structure tells
-you: arrangement, instrumentation balance, rhythmic density, register spread,
-section structure, and track roles. Be specific and constructive, name tracks
-where relevant, and avoid generic platitudes. Mix strengths with actionable
-suggestions. Keep each point to one or two sentences. Return 3 to 6 points.
-The score is your honest overall rating out of 100 for the project's current
-state as a composition-in-progress.`;
+short, candid review of a work-in-progress Ableton Live arrangement. You are
+given a structured summary of a SELECTION from the Set — the selected tracks
+over a chosen time range (which may be the whole song or a single section),
+NOT the audio. Base your feedback only on what the structure tells you:
+arrangement, instrumentation balance, rhythmic density, register spread,
+section structure, and track roles across what was selected. Be specific and
+constructive, name tracks where relevant, and avoid generic platitudes. Mix
+strengths with actionable suggestions. Keep each point to one or two sentences.
+Return 3 to 6 points. The score is your honest overall rating out of 100 for
+the selected material's current state as a composition-in-progress.`;
 
 export interface KeySource {
   /** Explicit key (e.g. from a dialog). */

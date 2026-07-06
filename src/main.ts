@@ -51,13 +51,13 @@ export async function activate(activation: unknown): Promise<void> {
       },
     );
     await live.registerStudioAction(
-      'Create Feedback Video (whole project)…',
+      'Create Feedback Video from Selection…',
       'clip2video.feedbackVideo',
       (targetArg) => {
         console.log('feedback command invoked');
         void runFeedbackSession(targetArg).catch((e) => console.error('feedback session failed:', e));
       },
-      live.PROJECT_SCOPES, // Scene row + arrangement time-selection — not single clips
+      live.PROJECT_SCOPES, // arrangement time-selection — select all for the whole project
     );
     console.log('activate: context-menu actions registered on all scopes');
   } catch (e) {
