@@ -176,7 +176,7 @@ async function uploadProjectZip(zipBytes: Buffer, apiKey: string, signal?: Abort
   for (const [k, v] of Object.entries(d.upload_headers ?? {})) {
     if (v != null) headers[k] = String(v);
   }
-  const put = await fetch(uploadUrl, { method: 'PUT', headers, body: zipBytes, signal });
+  const put = await fetch(uploadUrl, { method: 'PUT', headers, body: new Uint8Array(zipBytes), signal });
   if (!put.ok) throw new Error(`Direct upload PUT failed: HTTP ${put.status} ${(await put.text().catch(() => '')).slice(0, 200)}`);
 
   for (let attempt = 0; attempt < 5; attempt++) {
