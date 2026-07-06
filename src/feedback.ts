@@ -55,6 +55,27 @@ export async function persistApiKey(storageDir: string, key: string): Promise<vo
   await fs.writeFile(path.join(storageDir, 'anthropic-key'), key.trim(), { mode: 0o600 });
 }
 
+/** HyperFrames Cloud (HeyGen) key — the render path that works under Live's
+ *  sandbox (local render can't: Node children inherit the fs permission model). */
+export async function resolveHeyGenKey(storageDir?: string): Promise<string | null> {
+  const env = process.env.HEYGEN_API_KEY ?? process.env.HYPERFRAMES_API_KEY;
+  if (env) return env.trim();
+  if (storageDir) {
+    try {
+      const k = await fs.readFile(path.join(storageDir, 'heygen-key'), 'utf8');
+      if (k.trim()) return k.trim();
+    } catch {
+      /* none stored */
+    }
+  }
+  return null;
+}
+
+export async function persistHeyGenKey(storageDir: string, key: string): Promise<void> {
+  await fs.mkdir(storageDir, { recursive: true });
+  await fs.writeFile(path.join(storageDir, 'heygen-key'), key.trim(), { mode: 0o600 });
+}
+
 /** Call Claude for feedback. Throws with a readable message on failure. */
 export async function generateFeedback(
   summary: ProjectSummary,

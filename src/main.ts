@@ -17,7 +17,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
 import { exportSelection } from './exporter';
 import { renderCloud, renderLocal, type RenderJob } from './render';
-import { generateFeedback, resolveApiKey, persistApiKey } from './feedback';
+import { generateFeedback, resolveApiKey, persistApiKey, resolveHeyGenKey, persistHeyGenKey } from './feedback';
 import { authorFeedbackComposition } from './composer';
 import { type StyleInfo } from './studioProtocol';
 import type { RenderRequest, Timeline } from './types';
@@ -137,16 +137,19 @@ async function handleRender(sel: live.SelectionContext, req: RenderRequest): Pro
 }
 
 /**
- * Shared render tail: cloud when HEYGEN_API_KEY is set, else local (dev path,
- * needs Chrome + ffmpeg on PATH). Imports the MP4 into the project and shows
- * the done/error dialog. Used by both the studio render and the feedback video.
+ * Shared render tail. Live's managed host sandboxes Node child processes, so
+ * local render (npx/hyperframes is Node) can't run there — the shipped path is
+ * HyperFrames Cloud (network POST, no child Node). Resolve a HeyGen key (env /
+ * stored / prompt); with a key → cloud; without → local (works only on the
+ * un-sandboxed dev host). Imports the MP4 and shows the done/error dialog.
  */
 async function runRenderJob(job: RenderJob, progressText: string): Promise<void> {
-  const apiKey = process.env.HEYGEN_API_KEY ?? process.env.HYPERFRAMES_API_KEY;
+  let apiKey = await resolveHeyGenKey(live.storageDirectory());
+  if (!apiKey) apiKey = await promptForHeyGenKey();
   try {
     const mp4 = await live.withProgress(progressText, (report, signal) =>
       apiKey
-        ? renderCloud(job, apiKey, (phase, pct) => report(pct, phase), signal)
+        ? renderCloud(job, apiKey!, (phase, pct) => report(pct, phase), signal)
         : (report(undefined, 'Rendering locally…'), renderLocal(job)),
     );
     const delivered = await live.deliverIntoProject(mp4);
@@ -283,6 +286,32 @@ async function promptForApiKey(): Promise<string | null> {
   if (dir) {
     await persistApiKey(dir, key).catch((e: unknown) => console.error('key persist failed:', e));
   }
+  return key;
+}
+
+/** Ask for a HyperFrames Cloud (HeyGen) key — required to render inside Live
+ *  (local render is blocked by the host's Node sandbox). "Skip" attempts local
+ *  render, which only works on the dev host. */
+async function promptForHeyGenKey(): Promise<string | null> {
+  const html =
+    `<!doctype html><meta charset=utf-8><body style="margin:0;background:hsl(0,0%,21%);color:hsl(0,0%,71%);` +
+    `font:13px -apple-system,sans-serif;display:flex;flex-direction:column;gap:12px;padding:20px;height:100vh;box-sizing:border-box">` +
+    `<b style="color:#ff9d4d">HyperFrames Cloud key needed</b>` +
+    `<div>Rendering inside Live uses HyperFrames Cloud (Live sandboxes local rendering). ` +
+    `Paste a HeyGen API key (stored locally for next time) from platform.heygen.com.</div>` +
+    `<input id=k type=password placeholder="key…" style="padding:7px 10px;border-radius:6px;` +
+    `border:1px solid hsl(0,0%,7%);background:hsl(0,0%,12%);color:#eee;font:inherit" />` +
+    `<div style="display:flex;gap:8px;justify-content:flex-end">` +
+    `<button onclick="post('__skip__')" style="padding:6px 18px;border-radius:12px;border:1px solid hsl(0,0%,7%);background:hsl(0,0%,16%);color:inherit;font:inherit">Skip (dev host)</button>` +
+    `<button onclick="post(document.getElementById('k').value)" style="padding:6px 18px;border-radius:12px;border:0;background:#ff9d4d;color:#1a1200;font-weight:600;font:inherit">Save</button></div>` +
+    `<script>function post(v){(window.webkit?.messageHandlers?.live||window.chrome?.webview).postMessage({method:'close_and_send',params:[v]})}</script></body>`;
+  const entered = await live
+    .showStudioDialog('data:text/html,' + encodeURIComponent(html), 480, 240)
+    .catch(() => '');
+  const key = (entered ?? '').trim();
+  if (!key || key === '__skip__') return null;
+  const dir = live.storageDirectory();
+  if (dir) await persistHeyGenKey(dir, key).catch((e: unknown) => console.error('heygen key persist failed:', e));
   return key;
 }
 
