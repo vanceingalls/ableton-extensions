@@ -29,13 +29,25 @@ export interface RenderJob {
   templateDir: string; // e.g. templates/pulse-waveform
   timeline: Timeline;
   outFile?: string;
+  /** Extra JS files to write into the bundle (e.g. feedback.js setting a global). */
+  injectScripts?: { filename: string; content: string }[];
 }
 
-/** Copy the template over the work dir, inline the timeline as JS, and patch
- *  the composition's data attributes (HyperFrames reads duration/size from
- *  the HTML, not from flags). */
+/** Per-composition files the exporter/stager own. Never copy these FROM the
+ *  template dir — a dev checkout has fixture copies there (make-fixture.mjs)
+ *  that would clobber the real exported clip data and mux the wrong audio. */
+const GENERATED = new Set(['timeline.json', 'audio.wav', 'timeline.js', 'meta.json', 'output.mp4']);
+
+/** Copy the template's own assets over the work dir (which already holds the
+ *  real exported timeline.json + audio.wav), inline the timeline as JS, and
+ *  patch the composition's data attributes (HyperFrames reads duration/size
+ *  from the HTML, not from flags). */
 export async function stageBundle(job: RenderJob): Promise<void> {
-  await fs.cp(job.templateDir, job.workDir, { recursive: true, force: true });
+  await fs.cp(job.templateDir, job.workDir, {
+    recursive: true,
+    force: true,
+    filter: (src) => !GENERATED.has(path.basename(src)),
+  });
 
   const indexPath = path.join(job.workDir, 'index.html');
   const { width, height } = job.timeline.video;
@@ -56,6 +68,10 @@ export async function stageBundle(job: RenderJob): Promise<void> {
     JSON.stringify({ id: 'clip2video', name: job.timeline.meta.title }, null, 2),
     'utf8',
   );
+
+  for (const s of job.injectScripts ?? []) {
+    await fs.writeFile(path.join(job.workDir, s.filename), s.content, 'utf8');
+  }
 }
 
 /** Dev-machine render via the local CLI. Dimensions/duration/audio all come

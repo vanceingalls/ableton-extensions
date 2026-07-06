@@ -226,6 +226,30 @@ MIDI clip → "Render Video…" → dialog → Render → MP4 imported into the 
   is a render dialog, not yet the live studio. The studio (preview, scrub,
   mappings, refresh-from-Set) is still M3.
 
+### 2026-07-05 — LLM feedback video feature
+
+New feature: right-click → "Create Feedback Video…" → the extension summarizes
+the whole Set (`getProjectSummary`: per-track note counts, densities, device
+names, colors, tempo, sections), sends it to Claude (`src/feedback.ts`, model
+`claude-opus-4-8`, structured-output JSON schema), and renders the returned
+critique as a HyperFrames video (`templates/project-feedback`). Verified
+end-to-end with mock feedback (real 1080×1920 MP4; one card at a time,
+sentiment-colored, score count-up).
+
+- **API key**: read from `ANTHROPIC_API_KEY` (dev) or a `anthropic-key` file in
+  `environment.storageDirectory` (shipped); a paste-key dialog writes it there.
+- **DOM/CSS text is NOT bit-reproducible on host Chrome.** Two renders of the
+  feedback template differ at the byte level but are visually identical
+  (SSIM 0.99999, PSNR ~66 dB) — sub-pixel text antialiasing only. This is
+  expected: the canvas path (pulse-waveform) IS bit-exact; DOM text isn't
+  without `--docker`. For the feedback *review* video that's fine (no music
+  sync to protect); if bit-repro is ever required, render with `--docker`.
+- The feedback template drives animation via the `hf-seek` event (pure fn of
+  t) with a self-cancelling dev-preview loop guarded on the renderer globals
+  (`__hfSeekAllAdapters` etc.), so the preview never races capture.
+- `RenderJob.injectScripts` lets a render inject extra globals (here
+  `window.FEEDBACK`); `stageBundle` writes them into the bundle.
+
 ## Manual test matrix (§11) — fill in during M1/M2
 
 | Scope | Constant tempo | Tempo changes | Empty automation |

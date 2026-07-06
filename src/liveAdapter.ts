@@ -38,6 +38,7 @@ import type {
   TimeSignature,
   TrackInfo,
 } from './types';
+import type { ProjectSummary, TrackSummary } from './feedbackTypes';
 
 const API_VERSION = '1.0.0' as const;
 type V = typeof API_VERSION;
@@ -215,6 +216,74 @@ export async function getTracks(): Promise<TrackInfo[]> {
 /** Warp markers of an audio clip — shape matches TimeBridge exactly (VERIFY 6). */
 export async function getWarpMarkers(clip: AudioClip<V>): Promise<WarpMarker[]> {
   return clip.warpMarkers;
+}
+
+/**
+ * Compact, LLM-friendly description of the whole Set for the feedback feature.
+ * Reads every track's arrangement clips: note counts, per-track color (from
+ * clips), device (instrument/effect) names, and pitch range — no raw notes,
+ * no audio. `sel` supplies the region length and scope label.
+ */
+export async function getProjectSummary(sel: SelectionContext): Promise<ProjectSummary> {
+  const song = ctx.application.song;
+  const durationBeats = sel.durationBeats || regionFromTracks(song.tracks);
+  const tracks: TrackSummary[] = [];
+  let totalNotes = 0;
+  let minPitch = Infinity;
+  let maxPitch = -Infinity;
+
+  for (const track of song.tracks) {
+    let noteCount = 0;
+    let color: string | undefined;
+    for (const clip of track.arrangementClips) {
+      if (color === undefined) color = colorToHex(clip.color);
+      if (clip instanceof MidiClip) {
+        for (const n of clip.notes) {
+          if (n.muted) continue;
+          noteCount++;
+          const p = num(n.pitch);
+          if (p < minPitch) minPitch = p;
+          if (p > maxPitch) maxPitch = p;
+        }
+      }
+    }
+    totalNotes += noteCount;
+    tracks.push({
+      name: track.name,
+      kind: track instanceof MidiTrack ? 'midi' : 'audio',
+      color,
+      noteCount,
+      devices: track.devices.map((d) => d.name),
+      density: durationBeats > 0 ? +(noteCount / durationBeats).toFixed(2) : 0,
+    });
+  }
+
+  return {
+    title: sel.clipName || 'Untitled Set',
+    tempoBpm: num(song.tempo, 120),
+    timeSignature: '4/4', // no song-level signature in this SDK
+    durationBeats,
+    scope: sel.scope,
+    sections: song.cuePoints
+      .map((c) => ({ beat: num(c.time), label: c.name }))
+      .sort((a, b) => a.beat - b.beat),
+    tracks,
+    totalNotes,
+    pitchRange: Number.isFinite(minPitch) ? { min: minPitch, max: maxPitch } : null,
+  };
+}
+
+function regionFromTracks(tracks: Track<V>[]): number {
+  let end = 0;
+  for (const t of tracks) {
+    for (const c of t.arrangementClips) end = Math.max(end, num(c.endTime));
+  }
+  return end;
+}
+
+/** Where the extension stores the Anthropic API key (persists across sessions). */
+export function storageDirectory(): string | undefined {
+  return ctx.environment.storageDirectory;
 }
 
 // ---------------------------------------------------------------- services

@@ -71,7 +71,14 @@ async function init() {
   bridge = new TimeBridgeLib.TimeBridge(T.timing.tempoMap);
   canvas.width = T.video.width;
   canvas.height = T.video.height;
-  peaks = await computePeaks('./' + T.audio.file, WAVE_COLS * 8);
+  // Audio is optional: if the bounce was unavailable there is no audio.wav.
+  // The visuals are a pure function of the timeline, so we render regardless;
+  // a flat fallback replaces the waveform peaks.
+  try {
+    peaks = await computePeaks('./' + T.audio.file, WAVE_COLS * 8);
+  } catch (e) {
+    peaks = new Float32Array(WAVE_COLS * 8); // silent: flat waveform
+  }
   if (!underRenderer()) previewLoop(); // dev preview only
 }
 
