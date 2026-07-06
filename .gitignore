@@ -4,3 +4,4 @@ dist/
 templates/*/timeline.json
 templates/*/audio.wav
 research/*.txt
+dist/

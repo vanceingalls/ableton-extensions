@@ -7,9 +7,13 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "build:template-lib": "esbuild src/timebridge.ts --bundle --format=iife --global-name=TimeBridgeLib --outfile=templates/pulse-waveform/timebridge.browser.js"
+    "build:template-lib": "esbuild src/timebridge.ts --bundle --format=iife --global-name=TimeBridgeLib --outfile=templates/pulse-waveform/timebridge.browser.js",
+    "build:ext": "node tools/build-extension.mjs",
+    "package:ext": "node tools/build-extension.mjs --production && rm -f templates/pulse-waveform/timeline.json templates/pulse-waveform/timeline.js templates/pulse-waveform/audio.wav templates/pulse-waveform/meta.json && extensions-cli package -o dist/clip2video.ablx -i panel -i templates .",
+    "run:ext": "npm run build:ext && extensions-cli run"
   },
   "devDependencies": {
+    "@ableton-extensions/cli": "file:../extensions-sdk-1.0.0-beta.0/ableton-extensions-cli-1.0.0-beta.0.tgz",
     "@ableton-extensions/sdk": "file:../extensions-sdk-1.0.0-beta.0/ableton-extensions-sdk-1.0.0-beta.0.tgz",
     "@types/node": "^24.0.0",
     "ajv": "^8.17.0",

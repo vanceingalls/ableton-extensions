@@ -2,185 +2,153 @@
 <html lang="en">
 <head>
 <meta charset="utf-8" />
-<title>Clip2Video</title>
+<title>HyperFrames Studio</title>
 <style>
-  /* Design intent: this panel lives INSIDE Ableton Live, so it borrows Live's
-     vernacular — flat matte grays, dense small type, zero gloss. The only
-     color on screen is the clip's own color (set at runtime), which is how
-     Live itself communicates identity. Signature element: the mapping rows,
-     drawn like Live automation breakpoint lanes rather than generic selects. */
-  :root {
-    --bg: #202020;
-    --panel: #2a2a2a;
-    --line: #3a3a3a;
-    --text: #d6d6d6;
-    --dim: #8a8a8a;
-    --accent: #ff5722; /* replaced at runtime by the clip color */
-  }
+  /* Live-ish flat grays; the clip's own color is the only accent (§5.4). */
+  :root { --accent: #ff5722; }
   * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
   body {
-    background: var(--bg); color: var(--text);
-    font: 11px/1.5 "Helvetica Neue", Arial, sans-serif;
-    padding: 12px; user-select: none;
+    background: #2b2b2b; color: #d6d6d6;
+    font: 13px/1.45 -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; padding: 14px; gap: 12px;
   }
-  h1 {
-    font-size: 11px; font-weight: 700; letter-spacing: .08em;
-    text-transform: uppercase; color: var(--dim); margin-bottom: 2px;
+  h1 { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  h1 .swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--accent); display: inline-block; }
+  .meta { color: #9a9a9a; font-size: 12px; }
+  fieldset { border: 1px solid #3d3d3d; border-radius: 6px; padding: 10px 12px; display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+  legend { color: #9a9a9a; padding: 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  label { display: flex; align-items: center; gap: 6px; }
+  select {
+    background: #1f1f1f; color: #d6d6d6; border: 1px solid #3d3d3d;
+    border-radius: 4px; padding: 4px 8px; font: inherit;
   }
-  .clip-name {
-    font-size: 15px; font-weight: 700; margin-bottom: 14px;
-    border-left: 3px solid var(--accent); padding-left: 8px;
+  button {
+    background: #3d3d3d; color: #e8e8e8; border: 1px solid #4a4a4a;
+    border-radius: 5px; padding: 7px 16px; font: inherit; cursor: pointer;
   }
-  fieldset { border: 0; margin-bottom: 14px; }
-  legend { color: var(--dim); text-transform: uppercase; letter-spacing: .08em;
-           font-size: 10px; margin-bottom: 6px; }
-  .seg { display: flex; border: 1px solid var(--line); }
-  .seg button {
-    flex: 1; background: var(--panel); border: 0; color: var(--text);
-    padding: 6px 0; font: inherit; cursor: pointer;
-    border-right: 1px solid var(--line);
-  }
-  .seg button:last-child { border-right: 0; }
-  .seg button[aria-pressed="true"] { background: var(--accent); color: #111; font-weight: 700; }
-  .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-
-  .map-row {
-    display: grid; grid-template-columns: 1fr 16px 1fr; gap: 6px;
-    align-items: center; background: var(--panel); border: 1px solid var(--line);
-    padding: 6px; margin-bottom: 6px;
-  }
-  .map-row select {
-    width: 100%; background: var(--bg); color: var(--text);
-    border: 1px solid var(--line); font: inherit; padding: 4px;
-  }
-  .map-row .wire { text-align: center; color: var(--accent); font-weight: 700; }
-  .add-map {
-    width: 100%; background: none; border: 1px dashed var(--line);
-    color: var(--dim); padding: 6px; font: inherit; cursor: pointer;
-  }
-  .add-map:hover { color: var(--text); border-color: var(--dim); }
-
-  #render {
-    width: 100%; padding: 10px; margin-top: 4px; border: 0;
-    background: var(--accent); color: #111; font: inherit; font-weight: 700;
-    text-transform: uppercase; letter-spacing: .08em; cursor: pointer;
-  }
-  #render:disabled { background: var(--line); color: var(--dim); cursor: default; }
-  #status { margin-top: 10px; color: var(--dim); min-height: 16px; }
-  #status.error { color: #e0685c; }
-  #status a { color: var(--accent); }
+  button:hover { background: #474747; }
+  button.primary { background: var(--accent); border-color: transparent; color: #111; font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  #status { min-height: 2.6em; color: #9a9a9a; white-space: pre-line; }
+  #status.error { color: #ff8a65; }
+  progress { width: 100%; height: 6px; accent-color: var(--accent); }
+  .spacer { flex: 1; }
+  footer { display: flex; gap: 10px; align-items: center; }
 </style>
 </head>
 <body>
-  <h1>Clip2Video</h1>
-  <div class="clip-name" id="clipName">—</div>
+  <h1><span class="swatch" id="swatch"></span><span id="title">Connecting to Live…</span></h1>
+  <div class="meta" id="meta"></div>
 
   <fieldset>
-    <legend>Style</legend>
-    <div class="seg" id="styleSeg" role="group" aria-label="Visual style">
-      <button data-v="pulse-waveform" aria-pressed="true">Pulse</button>
-      <button data-v="falling-notes" aria-pressed="false">Notes</button>
-      <button data-v="typography" aria-pressed="false">Type</button>
-    </div>
+    <legend>Render</legend>
+    <label>Style <select id="style"></select></label>
+    <label>Aspect <select id="aspect">
+      <option>9:16</option><option>1:1</option><option>16:9</option>
+    </select></label>
+    <label>FPS <select id="fps"><option>30</option><option>60</option></select></label>
   </fieldset>
 
-  <fieldset>
-    <legend>Aspect</legend>
-    <div class="seg" id="aspectSeg" role="group" aria-label="Aspect ratio">
-      <button data-v="9:16" aria-pressed="true">9:16</button>
-      <button data-v="1:1" aria-pressed="false">1:1</button>
-      <button data-v="16:9" aria-pressed="false">16:9</button>
-    </div>
-  </fieldset>
+  <div id="status">Waiting for the exported timeline…</div>
+  <progress id="bar" max="100" value="0" hidden></progress>
 
-  <fieldset>
-    <legend>Automation → Visual</legend>
-    <div id="maps"></div>
-    <button class="add-map" id="addMap">+ map a lane</button>
-  </fieldset>
-
-  <button id="render">Render video</button>
-  <div id="status" role="status"></div>
+  <div class="spacer"></div>
+  <footer>
+    <button id="refresh">Refresh from Set</button>
+    <span class="spacer"></span>
+    <button id="close">Close</button>
+    <button id="render" class="primary" disabled>Render</button>
+  </footer>
 
 <script>
-  // Bridge to the Node side of the Extension. SDK: replace `parent.postMessage`
-  // with the real panel messaging API from the Extensions SDK.
-  const send = (msg) => parent.postMessage(msg, '*');
+/**
+ * Minimal M1 studio: talks studioProtocol over the loopback bridge
+ * (EventSource on ./__events, POST on ./__message — see src/studioServer.ts).
+ * The full M3 studio (template preview, dual ruler, mapping rows) builds on
+ * this page; the old mapping-row prototype lives in git history.
+ */
+const $ = (id) => document.getElementById(id);
+let timeline = null;
 
-  const state = {
-    style: 'pulse-waveform',
-    aspect: '9:16',
-    lanes: [],            // [{id, name}] from init
-    mappings: [],         // [{lane, target}]
-  };
-  const TARGETS = ['glow', 'zoom', 'hueShift', 'shake', 'gridDensity'];
+const post = (msg) =>
+  fetch('./__message', { method: 'POST', body: JSON.stringify(msg) }).catch(() => {});
 
-  function seg(el, key) {
-    el.addEventListener('click', (e) => {
-      const b = e.target.closest('button'); if (!b) return;
-      el.querySelectorAll('button').forEach(x => x.setAttribute('aria-pressed', 'false'));
-      b.setAttribute('aria-pressed', 'true');
-      state[key] = b.dataset.v;
-    });
-  }
-  seg(document.getElementById('styleSeg'), 'style');
-  seg(document.getElementById('aspectSeg'), 'aspect');
+const events = new EventSource('./__events');
+events.onmessage = (e) => handle(JSON.parse(e.data));
+events.onopen = () => post({ type: 'ready' });
+events.onerror = () => setStatus('Bridge connection lost — close and reopen the studio.', true);
 
-  document.getElementById('addMap').addEventListener('click', () => {
-    if (!state.lanes.length) return setStatus('No automation lanes found in this selection.');
-    state.mappings.push({ lane: state.lanes[0].id, target: TARGETS[0] });
-    drawMaps();
-  });
-
-  function drawMaps() {
-    const host = document.getElementById('maps');
-    host.innerHTML = '';
-    state.mappings.forEach((m, i) => {
-      const row = document.createElement('div');
-      row.className = 'map-row';
-      row.innerHTML =
-        `<select data-i="${i}" data-k="lane">` +
-          state.lanes.map(l => `<option value="${l.id}" ${l.id===m.lane?'selected':''}>${l.name}</option>`).join('') +
-        `</select><span class="wire">→</span>` +
-        `<select data-i="${i}" data-k="target">` +
-          TARGETS.map(t => `<option ${t===m.target?'selected':''}>${t}</option>`).join('') +
-        `</select>`;
-      host.appendChild(row);
-    });
-    host.querySelectorAll('select').forEach(s =>
-      s.addEventListener('change', () => {
-        state.mappings[+s.dataset.i][s.dataset.k] = s.value;
+function handle(msg) {
+  switch (msg.type) {
+    case 'init':
+      $('style').replaceChildren(...msg.availableStyles.map((s) => {
+        const o = document.createElement('option');
+        o.value = s.id;
+        o.textContent = s.manifest.displayName ?? s.id;
+        return o;
       }));
+      applyTimeline(msg.timeline);
+      if (!msg.audioUrl) {
+        setStatus('Audio bounce unavailable — render will need a manual export (File > Export Audio/Video).');
+      }
+      break;
+    case 'timelineUpdated':
+      applyTimeline(msg.timeline);
+      setStatus('Refreshed from Set.');
+      break;
+    case 'renderProgress':
+      $('bar').hidden = false;
+      $('bar').value = msg.pct;
+      setStatus(`Rendering — ${msg.phase} ${Math.round(msg.pct)}%`);
+      break;
+    case 'renderDone':
+      $('bar').hidden = true;
+      setStatus(`Done. Delivered (${msg.deliveredAs}):\n${msg.ref}`);
+      break;
+    case 'renderError':
+      $('bar').hidden = true;
+      setStatus(msg.message, true);
+      break;
   }
+}
 
-  document.getElementById('render').addEventListener('click', () => {
-    document.getElementById('render').disabled = true;
-    send({ type: 'render', request: {
-      aspect: state.aspect, fps: 30, style: state.style, mappings: state.mappings,
-    }});
+function applyTimeline(t) {
+  timeline = t;
+  const accent = t.meta.clipColor || '#ff5722';
+  document.documentElement.style.setProperty('--accent', accent);
+  $('title').textContent = t.meta.title;
+  $('meta').textContent =
+    `${t.meta.sourceScope} · ${t.timing.tempoMap[0].bpm} BPM · ` +
+    `${t.timing.durationBeats} beats (${t.audio.durationSeconds.toFixed(2)}s) · ` +
+    `${t.notes.length} notes · ${t.markers.length} markers`;
+  $('render').disabled = false;
+  setStatus('Timeline exported from the Set. Ready to render.');
+}
+
+function setStatus(text, isError) {
+  $('status').textContent = text;
+  $('status').className = isError ? 'error' : '';
+}
+
+$('refresh').onclick = () => { setStatus('Re-reading the Set…'); post({ type: 'refreshFromSet' }); };
+$('render').onclick = () =>
+  post({
+    type: 'requestRender',
+    style: $('style').value,
+    aspect: $('aspect').value,
+    fps: Number($('fps').value),
+    mappings: [], // no automation lanes in SDK 1.0.0-beta.0 (see DECISIONS.md)
   });
-
-  function setStatus(text, isError) {
-    const s = document.getElementById('status');
-    s.textContent = text; s.className = isError ? 'error' : '';
-  }
-
-  // Messages from the Node side.
-  window.addEventListener('message', (e) => {
-    const msg = e.data || {};
-    if (msg.type === 'init') {
-      document.getElementById('clipName').textContent = msg.clipName;
-      if (msg.clipColor) document.documentElement.style.setProperty('--accent', msg.clipColor);
-      state.lanes = msg.lanes || [];
-    }
-    if (msg.type === 'status') setStatus(msg.text);
-    if (msg.type === 'needAudio') setStatus(msg.text, true), document.getElementById('render').disabled = false;
-    if (msg.type === 'error') setStatus(msg.text, true), document.getElementById('render').disabled = false;
-    if (msg.type === 'done') {
-      setStatus('Done. Saved to: ' + msg.file);
-      document.getElementById('render').disabled = false;
-    }
-  });
+$('close').onclick = () => {
+  // Official close: hand the host a result string; Live closes the dialog.
+  const payload = JSON.stringify({ closedBy: 'user' });
+  const macos = window.webkit?.messageHandlers?.live;
+  const winrt = window.chrome?.webview;
+  if (macos) macos.postMessage({ method: 'close_and_send', params: [payload] });
+  else if (winrt) winrt.postMessage({ method: 'close_and_send', params: [payload] });
+  else setStatus('Not inside Live — close the tab instead.');
+};
 </script>
 </body>
 </html>
