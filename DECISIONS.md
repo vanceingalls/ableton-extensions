@@ -165,6 +165,25 @@ against the CLI itself and its docs. Corrections to earlier binary evidence:
 | 7 | MP4 delivery | RESOLVED | `resources.importIntoProject(path)`; temp files in `environment.tempDirectory` |
 | 8 | HyperFrames API | RESOLVED | public repo/docs; hf-seek event hook; CLI + /v3 cloud API (see summary) |
 
+### 2026-07-05 — Local render pipeline verified END-TO-END (no Ableton)
+
+`renderLocal()` was exercised for real: synthesized 124 BPM fixture
+(`tools/make-fixture.mjs`) → stageBundle → `hyperframes render` (Chrome +
+static ffmpeg/ffprobe in `~/.local/bin`) → 540×960 @30fps MP4, audio muxed.
+Results:
+- **Sync verified visually**: frame at beat 4 shows the bloom/glow/note
+  pulse; the between-beats frame is dim. (Programmatic ±1-frame assertion
+  still to add per §10 M2.)
+- **Determinism verified**: two renders → 243/243 identical frame md5s
+  (`ffmpeg -f framemd5`), even without `--docker`.
+- **Template must register a stub `window.__timelines['main']`
+  synchronously** — the renderer polls for a registered timeline per
+  composition and otherwise burns its full 45s budget (98s → 6.5s render
+  after the fix). Our animation rides the `hf-seek` event; the stub is
+  no-op-seekable.
+- `stageBundle` patches `data-duration/width/height` into index.html —
+  HyperFrames reads them from the composition, not from CLI flags.
+
 ## Manual test matrix (§11) — fill in during M1/M2
 
 | Scope | Constant tempo | Tempo changes | Empty automation |

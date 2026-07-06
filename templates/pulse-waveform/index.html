@@ -42,6 +42,18 @@
  *   glow, zoom, hueShift, shake, gridDensity — read via visualParam(name, t).
  */
 
+// Register a no-op seekable stub SYNCHRONOUSLY so the renderer's timeline
+// poll doesn't wait out its 45s budget — this composition animates via the
+// hf-seek event, not GSAP. The stub's methods match what the seek helper
+// calls (all guarded there, but cheap to provide).
+window.__timelines = window.__timelines || {};
+window.__timelines['main'] = {
+  pause() { return this; },
+  paused() { return true; },
+  seek() { return this; },
+  totalTime() { return 0; },
+};
+
 const canvas = document.getElementById('c');
 const ctx = canvas.getContext('2d');
 

@@ -52,11 +52,15 @@ npm run typecheck
 npm run build:template-lib    # rebuild templates/*/timebridge.browser.js
                               # REQUIRED after any src/timebridge.ts change
 
-# Template preview in a normal browser:
+# Template preview in a normal browser (WebAudio-clocked, click to play):
 cd templates/pulse-waveform
-cp ../../examples/timeline.example.json ./timeline.json
-# drop any short WAV next to it as audio.wav
-npx serve .   # open in a browser; the rAF preview loop runs
+node ../../tools/make-fixture.mjs .   # matched audio.wav + timeline.json (124 BPM kicks)
+npx serve .
+
+# Full local render (needs Chrome + ffmpeg/ffprobe; static builds live in ~/.local/bin):
+# stage a work dir with timeline.json + audio.wav, then renderLocal() drives
+# `npx hyperframes render` — see src/render.ts. Verified deterministic
+# (identical frame md5s across runs) on 2026-07-05.
 ```
 
 The template's one rule: **every pixel is a pure function of time.** No rAF state,
