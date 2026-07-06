@@ -25,6 +25,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.110.0",
+    "abort-controller": "^3.0.0",
+    "event-target-shim": "^6.0.2",
     "undici": "^8.7.0"
   }
 }

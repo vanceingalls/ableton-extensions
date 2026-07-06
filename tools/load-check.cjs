@@ -13,6 +13,8 @@ const strip = [
   'TransformStream', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy',
   'URL', 'URLSearchParams', 'atob', 'btoa', 'performance', 'PerformanceObserver',
   'MessageChannel', 'MessagePort', 'BroadcastChannel',
+  // global-only (no requireable source) — shimmed in src/webglobals.ts
+  'AbortController', 'AbortSignal', 'Event', 'EventTarget', 'DOMException', 'structuredClone',
 ];
 for (const k of strip) delete globalThis[k];
 

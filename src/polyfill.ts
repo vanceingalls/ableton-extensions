@@ -7,6 +7,7 @@
  * banner), there's no built-in require for fetch — so we bundle undici (the
  * library Node's own fetch is built on) and install the globals here.
  */
+import './webglobals'; // installs Event/EventTarget/AbortController/AbortSignal/... first
 import { fetch, Headers, Request, Response, FormData } from 'undici';
 import { Blob, File } from 'node:buffer';
 
