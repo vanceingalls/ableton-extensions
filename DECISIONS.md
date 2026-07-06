@@ -250,6 +250,28 @@ sentiment-colored, score count-up).
 - `RenderJob.injectScripts` lets a render inject extra globals (here
   `window.FEEDBACK`); `stageBundle` writes them into the bundle.
 
+### 2026-07-05 — Feedback video: Claude authors the composition (skills path)
+
+Per the chosen direction, the feedback video is no longer a fixed template —
+**Claude authors a HyperFrames composition** (single self-contained index.html,
+paused GSAP timeline on `window.__timelines['main']`) from the review data,
+following the HyperFrames authoring-skill conventions embedded in the system
+prompt (`src/composer.ts`). Then it **lints and self-repairs**: run
+`hyperframes lint --json`, feed any `severity:error` findings (with `code` +
+`fixHint` + `snippet`) back to Claude, repeat up to 3 rounds. If it can't be
+made clean, fall back to the fixed `project-feedback` template.
+
+Verified without a key: `hyperframes lint` catches real errors (e.g.
+`root_composition_missing_data_start`), and the new `RenderJob.prestaged` path
+renders an authored composition with GSAP animation (stageBundle skips staging;
+the work dir already holds index.html + gsap.min.js). GSAP is bundled
+(`GSAP_MIN` in the generated assets) so the composition needs no CDN.
+
+Also learned this session: a DOM (non-canvas) composition MUST expose a real
+paused GSAP timeline — the renderer only dispatches `hf-seek` for canvas comps,
+so the earlier hand-rolled hf-seek DOM template rendered frozen. The GSAP
+timeline is the native path and what the skills prescribe.
+
 ## Manual test matrix (§11) — fill in during M1/M2
 
 | Scope | Constant tempo | Tempo changes | Empty automation |

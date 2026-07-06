@@ -18,6 +18,7 @@ import * as fs from 'node:fs/promises';
 import { exportSelection } from './exporter';
 import { renderCloud, renderLocal, type RenderJob } from './render';
 import { generateFeedback, resolveApiKey, persistApiKey } from './feedback';
+import { authorFeedbackComposition } from './composer';
 import { type StyleInfo } from './studioProtocol';
 import type { RenderRequest, Timeline } from './types';
 import type { FeedbackReport } from './feedbackTypes';
@@ -214,22 +215,35 @@ async function runFeedbackSession(targetArg: unknown): Promise<void> {
     })),
   };
 
-  const durationSeconds = FB_INTRO + Math.max(1, report.points.length) * FB_PER + FB_OUTRO;
-  const timeline = feedbackTimeline(injected.title, durationSeconds);
   const workDir = path.join(workBase(), `fb-${Date.now()}`);
   await fs.mkdir(workDir, { recursive: true });
 
-  await runRenderJob(
-    {
+  // Claude authors the HyperFrames composition, lint-fixing until clean; if it
+  // can't be made clean, fall back to the fixed project-feedback template.
+  let job: RenderJob;
+  try {
+    const authored = await live.withProgress('Building your feedback video…', async (report_) => {
+      return authorFeedbackComposition(report, summary, apiKey!, workDir, 1080, 1920, (m) =>
+        report_(undefined, m),
+      );
+    });
+    const timeline = feedbackTimeline(injected.title, authored.durationSeconds);
+    job = { workDir, templateDir: 'authored', timeline, prestaged: true };
+    console.log(`authored composition, ${authored.durationSeconds}s`);
+  } catch (err) {
+    console.error('authoring failed, using fixed template:', (err as Error)?.message ?? err);
+    const durationSeconds = FB_INTRO + Math.max(1, report.points.length) * FB_PER + FB_OUTRO;
+    job = {
       workDir,
       templateDir: path.join(TEMPLATES_DIR, 'project-feedback'),
-      timeline,
+      timeline: feedbackTimeline(injected.title, durationSeconds),
       injectScripts: [
         { filename: 'feedback.js', content: `window.FEEDBACK = ${JSON.stringify(injected)};\n` },
       ],
-    },
-    'Rendering feedback video…',
-  );
+    };
+  }
+
+  await runRenderJob(job, 'Rendering feedback video…');
 }
 
 /** Minimal silent timeline (no audio) sized to the feedback length. */

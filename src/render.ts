@@ -32,6 +32,9 @@ export interface RenderJob {
   outFile?: string;
   /** Extra JS files to write into the bundle (e.g. feedback.js setting a global). */
   injectScripts?: { filename: string; content: string }[];
+  /** The work dir already holds a complete composition (e.g. Claude-authored) —
+   *  skip template staging entirely and render it as-is. */
+  prestaged?: boolean;
 }
 
 /** Write the template's inlined files into the work dir, inline the timeline as
@@ -43,6 +46,7 @@ export interface RenderJob {
  *  the template dir's basename. The work dir already holds the real exported
  *  timeline.json + audio.wav (written there by the exporter). */
 export async function stageBundle(job: RenderJob): Promise<void> {
+  if (job.prestaged) return; // work dir already holds a complete composition
   const style = path.basename(job.templateDir);
   const assets = TEMPLATE_ASSETS[style];
   if (!assets) throw new Error(`Unknown template "${style}" — not in TEMPLATE_ASSETS.`);
