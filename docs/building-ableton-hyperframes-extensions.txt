@@ -1,0 +1,613 @@
+================================================================================
+TURN AN ABLETON LIVE SET INTO VIDEO
+Reading the Extensions SDK and rendering with HyperFrames
+================================================================================
+
+A complete, copy-along guide to an Ableton Live 12 Extension with two modes: a
+music-locked visualizer from the raw notes, and an AI "feedback video" where a
+model reviews your project and designs the clip. Both call two APIs to render.
+Every reader, every wall, every line that matters.
+
+SDK 1.0.0-beta.0 · Live 12.4.5b6 · TypeScript + esbuild
+Full source: https://github.com/vanceingalls/ableton-extensions/tree/main/hyperframes-feedback
+
+(This is the prose-only version. Code listings are omitted — see the full
+illustrated guide or the GitHub repo for the code.)
+
+
+--------------------------------------------------------------------------------
+INTRO
+--------------------------------------------------------------------------------
+
+We built an Ableton Live Extension that does two things from a right-click: turn
+a selected clip into a beat-accurate visualizer, and generate an AI "feedback
+video" where a model reviews the project and designs the clip that presents its
+review. This post is the whole build — enough real code to recreate it, both
+render modes, and both API integrations. Where we hit a wall, the wall is in the
+text with the exact error, because you'll hit the same ones.
+
+But Ableton is just the host we picked. HyperFrames renders any HTML that's a
+pure function of time, so the real subject here is a recipe — read a product's
+structured data, shape it, render it to on-brand video — that drops into almost
+any app with a plugin or API surface. Keep that in mind while you read the
+SDK-specific parts; we zoom out at the end to a dozen other products where the
+exact same code fits.
+
+TL;DR
+An Ableton Extension is a bundled Node program Live runs in a sandbox. You read
+the Set through opaque handles you rehydrate into objects; integers arrive as
+BigInt; there's no global menu. You shape reads into a plain Timeline JSON, feed
+it to a HyperFrames composition (an HTML file the renderer seeks frame-by-frame
+— canvas driven by an hf-seek event, or DOM driven by a paused GSAP timeline),
+and render. Local rendering is impossible in a real install because the Node
+sandbox is inherited by child processes, so the shipped path is a network render
+(HyperFrames Cloud / HeyGen). The AI mode adds a second API — Anthropic — for the
+review and for authoring the composition.
+
+Assumed audience: you write TypeScript and have seen an esbuild config. You don't
+need to know HyperFrames, the Ableton Extensions SDK
+(https://ableton.github.io/extensions-sdk/), or the Anthropic API — we build each
+up from the first call. You do need Node 20+, and for the AI mode, an Anthropic
+key and a HeyGen key (they're separate accounts — more on that in Part 7).
+
+Contents:
+  1. The two-host model — the idea that explains every bug
+  2. Scaffold: manifest, build, and the polyfill layer
+  3. Reading the Set: scopes, handles, and the BigInt trap
+  4. The Timeline contract and beats <-> seconds
+  5. Mode 1 — Track -> Video (a canvas composition)
+  6. Mode 2 — Feedback Video (API #1: Anthropic)
+  7. Rendering (API #2: HyperFrames Cloud)
+  8. Dialogs, progress, and delivering the file
+  9. Speed-bump reference & where to start
+  10. Beyond Ableton — the same recipe, other products
+
+
+================================================================================
+PART 1 — THE MENTAL MODEL
+================================================================================
+
+THE ONE IDEA THAT EXPLAINS EVERY BUG
+
+Before any code: an Ableton Extension runs in one of two hosts, and for your
+code's purposes they're different machines. Almost every "works locally, breaks
+in Live" moment is a confusion between them.
+
+  - The dev host — extensions-cli run, launched from your shell with Developer
+    Mode on. Inherits your full environment. No filesystem sandbox, no Node
+    permission model. Everything works — which is why it lies to you.
+
+  - The managed host — what a real user gets after installing a packaged .ablx
+    with Developer Mode off. Live spawns your Node process under a hard permission
+    sandbox and strips a pile of web globals. This is the environment you must
+    support.
+
+The managed host imposes four constraints that shape the entire design.
+Internalize them now and the rest of this post is obvious:
+
+  1. Filesystem sandbox — you may read/write only two directories Live gives you
+     (storageDirectory, tempDirectory). Not /tmp, not even your own install folder.
+  2. Child processes inherit the sandbox — and can never be granted more. A
+     spawned Node CLI is dead on arrival.
+  3. Stripped web globals — fetch, Headers, Event, AbortController, TextEncoder…
+     all missing. You polyfill before anything loads.
+  4. No dynamic import() — the bundled host can't do a runtime import. Static
+     imports only.
+
+
+================================================================================
+PART 2 — SCAFFOLD & LOAD
+================================================================================
+
+PROJECT LAYOUT AND THE MANIFEST
+
+An extension is a directory with a manifest, a bundled entry file, and any
+assets. The important, non-obvious rule: package.json must also declare "main",
+or the host handshake times out with no useful error. The manifest itself is
+tiny — a name, the entry path (dist/extension.js), a version, and a minimum API
+version.
+
+Dependencies that matter: the Anthropic SDK (for the AI mode), undici (the fetch
+polyfill), and two small shims — abort-controller and event-target-shim — for
+globals the host strips. The Ableton SDK and CLI come in as local tarballs from
+the beta.
+
+THE BUILD: ONE BUNDLE, WITH A POLYFILL BANNER
+
+esbuild produces a single CommonJS file with the SDK and all deps inlined. The
+crucial part is the banner — an IIFE that runs before any bundled module and
+restores every stripped global that Node can hand back via require (TextEncoder,
+URL, Blob, the ReadableStream family, performance, MessageChannel, and so on).
+This is fix #1 for the "stripped globals" constraint. The build also inlines the
+template files (via a codegen step) so the sandboxed extension never has to read
+its own install directory.
+
+THE POLYFILL LAYER: GLOBALS WITH NO REQUIREABLE SOURCE
+
+The banner covers globals Node can restore. A handful — Event, EventTarget,
+AbortController, AbortSignal, DOMException, structuredClone — are "global only"
+with no module to require. undici references them at load, so we shim them from
+npm packages (event-target-shim, abort-controller) plus a tiny custom
+DOMException and a JSON-based structuredClone. This file is imported first,
+before undici. Then a second file installs the fetch family (fetch, Headers,
+Request, Response, FormData) from bundled undici, and Blob/File from node:buffer.
+
+SPEED BUMP — Ordering is load-bearing.
+  → Feedback failed: Headers is not defined
+If the Anthropic SDK module evaluates before these globals exist, it throws at
+load, not at call time. So main.ts line 1 is `import './polyfill'`, and
+polyfill's line 1 is `import './webglobals'`. Import order in the entry file is
+your install order.
+
+WHAT SAVED US HOURS — Test the load offline.
+Don't discover a missing shim by packaging and restarting Live. A ~20-line
+script simulates the host by deleting the globals from globalThis, then
+require()s the built bundle. Green ("LOADED OK; exports: activate") means your
+polyfills are complete.
+
+THE ENTRY POINT
+
+activate() is called once when Live loads the extension. It imports the polyfill
+first, binds the SDK, and registers the commands — Mode 1 on clip/track scopes,
+Mode 2 on arrangement-selection scopes. activate takes `unknown` on purpose:
+main.ts never imports an SDK type. That's the "iron rule" from Part 3 — the SDK
+is beta and quirky, so it lives in exactly one file.
+
+
+================================================================================
+PART 3 — READING THE SET
+================================================================================
+
+THE ADAPTER, AND WHY IT'S THE ONLY SDK CALLER
+
+liveAdapter.ts is the single file that imports @ableton-extensions/sdk.
+Everything else takes plain data. This keeps the beta surface auditable and lets
+you unit-test downstream code by mocking the adapter. You initialize once with
+the activation context; ctx is the root of everything — ctx.application.song,
+ctx.commands, ctx.ui, ctx.resources, ctx.environment, and ctx.getObjectFromHandle.
+
+WHERE THE USER CLICKS: SCOPES
+
+First SDK-shape surprise: there's no global menu. Every context-menu item is
+anchored to an object type — a scope. You register a command, then bind it to
+each scope where it should appear (MidiClip, AudioClip, ClipSlot,
+ClipSlotSelection, MidiTrack, AudioTrack, and the *.ArrangementSelection scopes).
+"Whole project" isn't a gesture the SDK offers, so the idiom is: register on
+*.ArrangementSelection and let the user select across all tracks (select-all =
+whole song).
+
+SPEED BUMP — A Session-view clip doesn't fire the scope you'd expect.
+Right-clicking a clip in Session view hands you a ClipSlotSelection, not a
+MidiClip. We registered on MidiClip, tested in Arrangement view, and the item
+was silently missing in Session view. Register the ClipSlot scopes too and
+unwrap the clip from the slot.
+
+TURNING A CLICK INTO A SELECTION
+
+The callback's argument type depends on the scope: a Handle for object scopes,
+or a selection object for the selection scopes. A handle is opaque —
+getObjectFromHandle(handle, Class) rehydrates it into a live object. The resolver
+branches on runtime shape: an arrangement selection carries selected_lanes plus a
+time window; a clip-slot selection carries selected_clip_slots (unwrap the first
+slot holding a clip); otherwise it's a Handle you rehydrate and discriminate by
+class (Clip, ClipSlot, Track).
+
+THE BIGINT TRAP
+
+Reading is pleasant — clip.notes, note.pitch, song.tempo — until you serialize.
+
+SPEED BUMP — Integers cross the bindings as BigInt, even where the types say
+number.
+  → TypeError: Cannot mix BigInt and other types, use explicit conversions
+First seen on Clip.color, then note times/pitch/velocity. The TypeScript types
+claim number; the runtime hands you bigint. It survives until arithmetic or
+JSON.stringify, then throws far from the read that caused it. The fix is a
+discipline: coerce every integral read at the boundary through a single num()
+helper (Number(v)), and build colorToHex / clampVelocity on top of it.
+
+READING NOTES
+
+The core reader walks a clip's notes (skipping muted ones), offsets their
+clip-relative beats so the exported region starts at beat 0, and passes through
+probability when present. For an arrangement window it iterates the in-range
+clips on each selected MIDI track.
+
+WHAT THE SDK DOESN'T GIVE YOU (YET)
+
+The section we wish we'd read first. Beta 1.0.0 exposes a solid core, but several
+things you'll reach for aren't there — design around them from the start:
+
+  - No automation — no API to read envelopes/automation curves. getAutomation()
+    returns {}. If your visual rides a filter sweep, you can't see it — derive
+    motion from notes.
+  - Static tempo only — song.tempo is one value; no tempo-map readout. We build a
+    one-point map, so beat<->second is exact only at constant tempo.
+  - No song time signature — it's exposed on scenes, not the song. We default to
+    4/4.
+  - No track color — only clips carry color. We read the first in-range clip's
+    color as the track's identity.
+  - Object-anchored menus — no global command surface; every action is a
+    right-click on a specific object type.
+
+THE UPSIDE. What is there is plenty: notes (pitch/start/length/velocity/
+probability), per-clip color, per-track device names, cue points as section
+markers, renderPreFxAudio to bounce audio, and importIntoProject to drop the
+finished MP4 back into the Set. That last pair is what makes it a loop, not an
+export.
+
+
+================================================================================
+PART 4 — THE DATA CONTRACT
+================================================================================
+
+ONE JSON, THEN NO MORE SDK
+
+We never hand raw SDK objects to the renderer. Every read is assembled into a
+plain Timeline — serializable, testable, SDK-free. It carries meta (title, color,
+scope), timing (tempo map, signatures), audio (file, duration, offset), the
+notes, markers, tracks, and a video spec (width, height, fps, style). The
+exporter is pure orchestration (mock the adapter and it unit-tests cleanly): it
+fans out the adapter reads, bounces audio if it can, computes duration via
+TimeBridge, and writes timeline.json + audio.wav into a fresh work dir.
+
+BEATS <-> SECONDS: THE ONE TIME CONVERSION
+
+HyperFrames seeks by seconds; music is in beats. TimeBridge is the single
+implementation of that math (two implementations = drift), anchored so
+beat 0 === second 0 at the region start. At constant tempo it's a scale; the ramp
+path integrates a linearly-varying BPM (a log integral). It compiles for Node and
+the browser, so the composition uses the same code to place notes.
+
+SUBTLE BUG WE FIXED. Our binary search for the active tempo segment originally
+capped at length-2. That silently extended the second-to-last segment's tempo (or
+worse, its ramp) past the end of the map. segmentAt must be allowed to return the
+last point — past it, the segment holds a constant BPM because the next point is
+undefined.
+
+
+================================================================================
+PART 5 — MODE 1 · TRACK -> VIDEO
+================================================================================
+
+A HYPERFRAMES COMPOSITION IS AN HTML FILE IT SEEKS
+
+The renderer loads your HTML, then seeks it frame by frame: it sets a virtual
+time and captures the pixels. The rule that makes music-sync exact: every pixel
+is a pure function of time. No requestAnimationFrame state, no accumulators, no
+Date.now(). Same t in, same frame out — so the render is note-accurate by
+construction, and safe to capture out of order across parallel workers.
+
+Two ways to receive that clock. Canvas compositions get an hf-seek event
+(detail.time in seconds) — that's Mode 1. DOM compositions expose a paused GSAP
+timeline the renderer advances — that's Mode 2. The canvas root declares its size
+and duration in data-* attributes (patched from the timeline before render), and
+registers a synchronous no-op timeline stub so the renderer's timeline poll
+returns at once. The data arrives two ways: the render inlines it as
+window.TIMELINE (no runtime fetch — the sandbox forbids it), while the dev
+preview falls back to fetching timeline.json. Then renderFrame(t) reads the
+timeline and draws — converting seconds to beats, computing note energy as an
+exponential decay around each note's start, and drawing a beat-synced ring, a
+scrolling waveform, and one dot per active note (x by pitch, size by velocity
+decay).
+
+STAGING THE BUNDLE
+
+Before rendering, the composition's files are written into the work dir. Because
+the sandbox forbids reading our own install dir, template files are inlined into
+the bundle at build time (a codegen step produces a map of assets) and written
+from memory. We also patch the root's data-duration / data-width / data-height
+from the timeline (HyperFrames reads size and duration from the HTML, not CLI
+flags) and inline the data as JS.
+
+THE FULL MODE 1 FLOW
+
+Resolve the selection -> export -> open a small dialog for aspect/fps/style ->
+render -> import. One right-click, one session.
+
+
+================================================================================
+PART 6 — MODE 2 · FEEDBACK VIDEO (API #1)
+================================================================================
+
+A COMPACT SUMMARY, NOT THE RAW NOTES
+
+Mode 2 sends the model a small, structured description of the selection — counts,
+per-track devices/density, register, sections. No raw notes, no audio. Cheap, and
+enough to reason about arrangement and balance.
+
+API #1 — ANTHROPIC: THE REVIEW AS VALIDATED JSON
+
+We call Claude through the official SDK, with three settings that matter for this
+kind of task: model claude-opus-4-8, adaptive thinking, and structured output
+(a JSON schema) so the response is JSON matching our FeedbackReport — no parsing
+guesswork. We stream and take the final message, clamping the score for the gauge.
+
+API NOTE. On Opus 4.6+ models, thinking is {type:'adaptive'} — the old
+budget_tokens form is rejected. Always check stop_reason === 'refusal' before
+reading content: a safety decline is an HTTP 200 with an empty content array, not
+an exception.
+
+WHERE THE CONVENTIONS COME FROM: INSTALL THE HYPERFRAMES SKILLS
+
+The rules in the authoring prompt aren't invented — they're distilled from the
+HyperFrames skills. HyperFrames ships a CLI (npx hyperframes) that does more than
+render: it installs a set of authoring skills — Markdown playbooks that teach an
+AI the composition contract, the GSAP runtime, and the determinism rules. That
+same CLI is where `hyperframes lint` and `hyperframes render` come from. Running
+`npx hyperframes skills` drops skills like hyperframes-core (the composition
+contract), hyperframes-animation (the GSAP/canvas runtime), and
+hyperframes-registry into your agent's skill directories. Reading hyperframes-core
+is exactly how we learned the non-negotiables — the sized root, the single paused
+timeline, the determinism bans.
+
+DESIGN CHOICE. Rather than pasting a multi-thousand-word skill into every request,
+we lifted only the hard rules that break a render if violated and kept the system
+prompt tight — cheaper, and more deterministic output. You could instead hand the
+model the skill file directly and let it read the full contract; the trade-off is
+prompt size vs. control. Either way, the skills are the source of truth — write
+them down once, from the CLI, before you prompt.
+
+CLAUDE AUTHORS THE COMPOSITION — THEN LINTS AND FIXES IT
+
+Instead of a fixed template, the model writes the HyperFrames composition from the
+review, following those conventions. The system prompt is the composition contract
+(the hard rules the renderer needs), and GSAP is provided locally so there's no
+CDN. Then we lint the output — with the same `hyperframes lint` from the CLI — and
+feed errors back for repair, up to three rounds, before rendering.
+
+SPEED BUMP — A DOM composition with a "stub" timeline renders frozen.
+Our first hand-rolled DOM template listened for hf-seek like the canvas one — and
+rendered a static first frame (172 KB of nothing moving). The renderer only
+dispatches hf-seek for canvas comps; a DOM comp must expose a real paused GSAP
+timeline on window.__timelines['main'], which the renderer advances with
+tl.totalTime(t). Swap the stub for a real timeline and the same file renders at
+2.2 MB, fully animated. That's why the authoring contract mandates GSAP: the
+model builds a paused timeline that counts the score up and reveals each feedback
+card in turn.
+
+THE FULL MODE 2 FLOW
+
+Resolve the selection -> compact summary -> Claude review (API #1) -> Claude
+authors + lint-fixes the composition -> render (API #2) -> import. If authoring
+can't be made lint-clean, fall back to a fixed template so the user always gets a
+video.
+
+
+================================================================================
+PART 7 — RENDERING (API #2)
+================================================================================
+
+WHY THE SHIPPED RENDERER HAS TO BE A NETWORK CALL
+
+We had local rendering working on the dev host — spawn the hyperframes CLI, it
+drives headless Chrome and ffmpeg, out comes an MP4. Then we installed the real
+.ablx and hit the wall.
+
+SPEED BUMP (the architectural one) — The Node sandbox is inherited by child
+processes, and can't be widened.
+  → npx exited with 1 … ERR_ACCESS_DENIED, permission: 'FileSystemRead',
+    resource: '.../npm/bin/npx-cli.js'
+The managed host runs your Node under --permission (fs limited to storage/temp).
+Any child Node process inherits that and can never get more access. hyperframes
+is a Node CLI, so it can't even read its own program files. Stripping NODE_OPTIONS
+doesn't help — the inheritance is intrinsic. Native binaries (ffmpeg, zip) are
+fine as children; Node CLIs are not. So production rendering must be a network
+render: zip the composition, upload, poll, download.
+
+API #2 — HYPERFRAMES CLOUD: UPLOAD, SUBMIT, POLL, DOWNLOAD
+
+HyperFrames Cloud is a HeyGen-hosted service (api.heygen.com), authed with an
+x-api-key. The whole render is: zip the work dir, upload the zip, submit a render
+referencing it, poll, download the MP4.
+
+SPEED BUMP — Don't invent an API shape the official CLI never uses.
+  → HTTP 400 invalid_parameter — "Field required", param: "project.base64.media_type"
+We tried submitting the project as inline base64 and kept 400-ing on a field we
+were sending. The tell: the official CLI has zero references to that field — it
+never uses inline base64. It uploads via a direct-to-S3 flow and references the
+result by asset_id: POST /v3/assets/direct-uploads (with filename, content_type,
+size, sha256) -> PUT the bytes to the presigned URL (no api key on that request)
+-> POST /v3/assets/{id}/complete (retry on 409) -> submit the render with
+{type:'asset_id', asset_id}. We replicated that exactly and it went through first
+try. Then poll GET /v3/hyperframes/renders/{id} every 5s until completed, and
+download the video_url.
+
+The api() helper is a thin fetch wrapper that sets x-api-key and surfaces the
+response body on error — which is how we saw that 400 field name instead of a
+generic failure. And run() spawns children with a widened PATH, strips
+NODE_OPTIONS, and captures output so a child failure tells you why.
+
+NOT A BUG — A BILLING FACT. The two APIs have separate wallets.
+  → HTTP 402 insufficient_credit — "At least 9.0 API credits are required to render"
+The review (Anthropic) and the render (HeyGen) are separate services with separate
+billing. Money in your Anthropic account does nothing for HeyGen rendering, and
+vice versa. Surface this in your UI or users will file it as a bug. Which means you
+store two keys.
+
+TWO KEYS, RESOLVED AND STORED
+
+Each API's key resolves from: an explicit value -> an env var -> a file in
+storageDirectory (the only writable place). If none, prompt and persist (mode
+0600). The render tail resolves the HeyGen key, prompts if missing, and picks
+cloud vs. local (cloud when a key is present).
+
+
+================================================================================
+PART 8 — DIALOGS & DELIVERY
+================================================================================
+
+DIALOGS: A data: URL AND A MESSAGE BRIDGE
+
+The host's WebView won't load http://localhost — it renders blank. The working
+pattern is a self-contained data:text/html, URL where the page posts its result
+back through the native bridge (window.webkit.messageHandlers.live on macOS /
+window.chrome.webview on Windows) via
+{ method:'close_and_send', params:[value] } and closes. To pass data into a
+dialog, string-replace a token in the HTML before encoding — keep the token a
+valid JS literal so the page still parses un-injected.
+
+PROGRESS, AND PUTTING THE FILE BACK
+
+withProgress wraps work in Live's progress dialog and hands you a reporter and an
+AbortSignal (thread it into the cloud poll so Cancel works). importIntoProject
+closes the loop. Reveal/Open spawn native open/explorer/xdg-open.
+
+LAST MANAGED-HOST TRAP — No dynamic import().
+  → A dynamic import callback was not specified.
+Reveal originally used await import('node:child_process'). The bundled host can't
+evaluate a runtime import(). Use static top-level imports only — esbuild inlines
+them. This one hid until the very last click of an otherwise-successful render.
+
+
+================================================================================
+PART 9 — REFERENCE
+================================================================================
+
+WHAT YOU GET
+  - 1080x1920, seek-per-frame
+  - 2 APIs (Anthropic + HeyGen)
+  - 2 writable directories, total
+  - 0 local renders in production
+
+THE SPEED-BUMP TABLE (each cost us at least an hour)
+
+  Symptom                    Cause                          Fix
+  ------------------------   ----------------------------   ----------------------------
+  handshake timeout          package.json missing "main"    add "main"
+  Headers is not defined     host strips the fetch family   undici + polyfills, first
+  Cannot mix BigInt…         SDK returns BigInt for ints    num() at every integer read
+  menu absent (Session)      fires ClipSlotSelection        register ClipSlot scopes too
+  modal loads blank          http://localhost won't load    data: URL + message bridge
+  video renders frozen       DOM needs a real GSAP timeline register a paused timeline
+  ERR_ACCESS_DENIED /tmp     filesystem sandbox             use tempDirectory()
+  can't read own templates   sandbox blocks install dir     inline assets at build time
+  npx exited with 1          child Node inherits sandbox    render in the cloud
+  400 project.base64…        guessed an unused API shape    replicate the CLI asset flow
+  402 insufficient_credit    HeyGen != Anthropic billing    top up HeyGen; store 2 keys
+  dynamic import callback…   no runtime import()            static top-level imports
+
+WHERE TO START
+
+Don't start from a blank folder — there's a minimal starter template in the repo
+(https://github.com/vanceingalls/ableton-extensions/tree/main/hyperframes-starter)
+that already does the whole loop (read a clip's notes -> a canvas composition ->
+render -> import), in about ten commented files. Clone it, run `npm run check`, and
+build up from there.
+
+If you're building from scratch anyway, the order that would have saved us the
+most time: (1) scaffold the polyfill layer and an offline load-check on day one;
+(2) build liveAdapter as the single SDK file and route every integer through
+num(); (3) decide your scopes and prototype the menu placement before any data
+work; (4) target cloud rendering from the start, treat local render as a dev
+convenience; (5) if you add the AI mode, expect two separate API bills and store
+two keys.
+
+The SDK is beta and it shows — but the primitives are right, and importIntoProject
+closing the loop is what makes an extension feel native rather than like an export
+button. Everything above is the tax to get there. Now you don't pay it twice.
+
+
+================================================================================
+PART 10 — BEYOND ABLETON
+================================================================================
+
+THE SAME RECIPE, OTHER PRODUCTS
+
+Strip the Ableton specifics and what's left is a four-step recipe: read a host's
+structured data -> shape it -> author or pick an HTML composition -> render it
+deterministically. Only the first step is Ableton-shaped. HyperFrames itself only
+asks for HTML that's a pure function of time, so the input can be any structured
+data and the host can be any product with a plugin or API surface.
+
+That gives you two independent axes of flexibility. The host is whatever holds the
+data — a DAW, an IDE, a storefront, a dashboard, a wearable. And the composition
+can be a fixed template, a registry block, or — as in Mode 2 — authored per item
+by a model, so every video is bespoke and on-brand without a designer in the loop.
+
+WHY THE HTML/CSS/JS FOUNDATION IS WHAT MAKES THIS EASY
+
+None of that flexibility is free — it falls out of one architectural choice: a
+composition is a web page, not a proprietary project format. That single fact is
+why integration is cheap:
+
+  - No new language, and it's the one everyone already knows. Not a node graph or a
+    compositing DSL — HTML/CSS/JS. The talent pool is the whole web. It's also
+    exactly why Mode 2 works: authoring a composition is authoring a webpage, the
+    most-represented thing in a model's training data, so an LLM does it reliably
+    and a linter can check it. A proprietary format would make "AI designs the
+    video" a research project.
+  - The web ecosystem is your component library. GSAP, D3, Three.js, Lottie,
+    Chart.js, SVG, WebGL, web fonts — anything that renders in a browser renders in
+    a composition. You don't rebuild charts or easing; you import them. Your
+    existing brand CSS, tokens, and logos drop in directly, so "on-brand" is free.
+  - The hard parts of motion graphics come free. Text wrapping, flexbox/grid
+    layout, i18n, emoji, responsive units — the browser already solves them. A
+    native engine reimplements every one. Change aspect ratio and CSS just reflows.
+  - The integration seam is "emit a string," not "link an SDK." A host only has to
+    produce HTML. Every language can do that — Node, Rails, Python, a serverless
+    function. Data binding is a JSON global (window.TIMELINE = {…} — literally what
+    this extension does). No native library, no ABI, no graphics context.
+  - The preview loop is a browser refresh, and compositions are just text files —
+    they version-control, diff, code-review, and read transparently, which is what
+    makes them lintable and closes the Mode-2 author->lint->fix loop.
+  - The renderer already exists everywhere. HyperFrames seeks headless Chromium —
+    ubiquitous, free, battle-tested — so it never ships a bespoke renderer into
+    each host. "Seek to time t, screenshot" maps perfectly onto a browser you've
+    written as a pure function of time.
+
+The through-line: HTML/CSS/JS turns video from a specialized native-graphics
+problem into a web problem — so the existing web workforce, web libraries,
+browsers, and LLMs are all instantly pointed at it.
+
+A FEW CONCRETE PLACES THE EXACT SAME CODE DROPS IN
+
+  - Fitness — Strava: GPS route, splits, heart rate -> a highlight reel with the
+    map drawing in time to your pace.
+  - Commerce — Shopify: product photos, price, reviews -> an auto-cut video ad per
+    product; an "order shipped" clip per customer.
+  - Dev — GitHub: a release's merged PRs and commits -> an animated changelog /
+    ship-reel; a repo year-in-review.
+  - Finance — Stripe: revenue events and MRR -> a "$10k MRR" milestone video; a
+    monthly team recap.
+  - Design — Figma: frames and prototype flows -> an animated walkthrough paced by
+    the flow.
+  - Data / BI — Sheets · Notion · Airtable: a range or database view -> an animated
+    chart video (HyperFrames ships a data-chart block for exactly this).
+  - Team — Slack: a slash command over channel activity -> a "wins of the week"
+    recap posted back to the channel.
+  - Consumer — Wrapped-style recaps: a user's yearly stats -> a personalized
+    year-in-review (the whole Spotify-Wrapped genre).
+  - Wellness — Oura · Whoop: sleep and recovery time-series -> a weekly recovery
+    recap.
+  - Gaming — Chess.com · game APIs: a match's moves and stats -> a replay with a
+    live eval bar, or a post-match highlight card.
+  - Infra — CI/CD · Vercel: a deploy or coverage trend -> a status clip or an
+    animated postmortem.
+  - Creative — other DAWs & editors: the same plugin pattern in FL Studio, Bitwig,
+    or a video editor's auto lower-thirds.
+
+None of these need a video team or a render farm — just the product's own data and
+an HTML composition. The Ableton extension in this post is one row of that table;
+the others are the same four steps with a different first one. That's the whole
+point of building on HyperFrames: the renderer is the boring, solved part, so the
+interesting work is only ever "what data, and what should it look like."
+
+
+--------------------------------------------------------------------------------
+FURTHER READING
+--------------------------------------------------------------------------------
+  - The complete extension — vanceingalls/ableton-extensions on GitHub:
+    https://github.com/vanceingalls/ableton-extensions/tree/main/hyperframes-feedback
+  - Ableton Extensions SDK — official docs (public beta):
+    https://ableton.github.io/extensions-sdk/
+  - HyperFrames — composition conventions + cloud render API:
+    https://hyperframes.heygen.com
+  - Anthropic API — structured outputs & adaptive thinking:
+    https://docs.anthropic.com
+  - undici — the fetch implementation we bundle:
+    https://github.com/nodejs/undici
+  - GSAP timelines — the DOM animation runtime:
+    https://gsap.com/docs/v3/
+
+Written from a real build against Ableton Extensions SDK 1.0.0-beta.0 on Live
+12.4.5b6, Node 24. Versions matter in beta — pin yours and note the date.
