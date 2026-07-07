@@ -5,11 +5,19 @@ with [HyperFrames](https://hyperframes.heygen.com): Claude reviews your project 
 video presenting the review, rendered and imported back into your Set. The shared engineering
 notes live in [`docs/`](docs/).
 
+## Start here
+
+New to this? [**`hyperframes-starter/`**](hyperframes-starter/) is a minimal, working version of the
+feedback extension — the smallest code that wires up **both APIs**: Anthropic for the review, and
+HeyGen (HyperFrames Cloud) for the render. It renders the review into a fixed template rather than
+having the model design it, so you can see the whole pipeline before adding the advanced parts.
+
 ## Extensions
 
 | Project | What it does |
 | --- | --- |
-| [`hyperframes-feedback/`](hyperframes-feedback/) | Select an arrangement range across tracks → **Create Feedback Video from Selection…**. Claude reviews the selection, authors a HyperFrames composition of the review (lint-fixed until clean), renders it via HyperFrames Cloud, and imports the MP4 back into the Set. |
+| [`hyperframes-starter/`](hyperframes-starter/) | **Minimal starter.** The feedback loop in as little code as possible, focused on the two API integrations (Anthropic + HeyGen). A fixed composition, no LLM-authoring. Copy it and build up. |
+| [`hyperframes-feedback/`](hyperframes-feedback/) | The full extension. Claude reviews the selection, **authors** a HyperFrames composition of the review (lint-fixed until clean), renders it via HyperFrames Cloud, and imports the MP4 back into the Set. |
 
 ## Docs
 

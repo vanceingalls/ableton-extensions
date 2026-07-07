@@ -1,0 +1,27 @@
+{
+  "name": "hyperframes-feedback-starter",
+  "version": "0.1.0",
+  "private": true,
+  "main": "dist/extension.js",
+  "description": "Minimal Ableton × HyperFrames feedback-video starter: wiring the Anthropic + HeyGen APIs",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "check": "npm run build && node tools/load-check.cjs",
+    "typecheck": "tsc --noEmit",
+    "package": "node tools/build.mjs --production && extensions-cli package -o dist/hyperframes-feedback-starter.ablx -i template .",
+    "run": "npm run build && extensions-cli run"
+  },
+  "devDependencies": {
+    "@ableton-extensions/cli": "file:../../extensions-sdk-1.0.0-beta.0/ableton-extensions-cli-1.0.0-beta.0.tgz",
+    "@ableton-extensions/sdk": "file:../../extensions-sdk-1.0.0-beta.0/ableton-extensions-sdk-1.0.0-beta.0.tgz",
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
+    "abort-controller": "^3.0.0",
+    "event-target-shim": "^6.0.2",
+    "undici": "^8.7.0"
+  }
+}
