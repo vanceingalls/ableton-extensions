@@ -145,6 +145,13 @@
   .kpi .v { font-size: 1.7rem; font-weight: 800; letter-spacing: -0.02em; color: var(--accent); font-variant-numeric: tabular-nums; }
   .kpi .k { font-family: var(--mono); font-size: 11px; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; margin-top: 4px; }
 
+  .integrations { margin: 24px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(228px, 1fr)); gap: 12px; }
+  .icard { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 15px 16px; display: flex; flex-direction: column; gap: 6px; }
+  .icard .cat { font-family: var(--mono); font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+  .icard .prod { font-weight: 700; font-size: 1.02rem; letter-spacing: -0.01em; }
+  .icard .flow { font-size: .9rem; color: var(--muted); line-height: 1.5; }
+  .icard .flow .arrow { color: var(--accent); font-family: var(--mono); padding: 0 2px; }
+
   .tablewrap { margin: 22px 0 0; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; }
   table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: .92rem; }
   th, td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -190,6 +197,7 @@
   <div class="wrap">
 
     <p class="lede">We built an Ableton Live Extension that does two things from a right-click: turn a selected clip into a beat-accurate visualizer, and generate an AI "feedback video" where a model reviews the project and <em>designs</em> the clip that presents its review. This post is the whole build — enough real code to recreate it, both render modes, and both API integrations. Where we hit a wall, the wall is in the text with the exact error, because you'll hit the same ones.</p>
+    <p>But Ableton is just the host we picked. HyperFrames renders <em>any</em> HTML that's a pure function of time, so the real subject here is a <strong>recipe</strong> — read a product's structured data, shape it, render it to on-brand video — that drops into almost any app with a plugin or API surface. Keep that in mind while you read the SDK-specific parts; we zoom out at the end to a dozen other products where the exact same code fits.</p>
 
     <div class="tldr">
       <span class="lbl">TL;DR</span>
@@ -1088,6 +1096,39 @@ Output ONLY the complete HTML document.`;</code></pre></div>
     <h2>Where to start</h2>
     <p>The order that would have saved us the most time: <strong>(1)</strong> scaffold the polyfill layer and an offline load-check on day one; <strong>(2)</strong> build <code>liveAdapter</code> as the single SDK file and route every integer through <code>num()</code>; <strong>(3)</strong> decide your scopes and prototype the menu placement before any data work; <strong>(4)</strong> target cloud rendering from the start, treat local render as a dev convenience; <strong>(5)</strong> if you add the AI mode, expect two separate API bills and store two keys.</p>
     <p>The SDK is beta and it shows — but the primitives are right, and <code>importIntoProject</code> closing the loop is what makes an extension feel native rather than like an export button. Everything above is the tax to get there. Now you don't pay it twice.</p>
+
+    <div class="part" id="p10"><span class="pn">Part 10</span><span class="pt">Beyond Ableton</span></div>
+
+    <h2>The same recipe, other products</h2>
+    <p>Strip the Ableton specifics and what's left is a four-step recipe: <strong>read a host's structured data → shape it → author or pick an HTML composition → render it deterministically.</strong> Only the first step is Ableton-shaped. HyperFrames itself only asks for HTML that's a pure function of time, so the input can be any structured data and the host can be any product with a plugin or API surface.</p>
+    <p>That gives you two independent axes of flexibility. The <strong>host</strong> is whatever holds the data — a DAW, an IDE, a storefront, a dashboard, a wearable. And the <strong>composition</strong> can be a fixed template, a registry block, or — as in Mode 2 — <em>authored per item by a model</em>, so every video is bespoke and on-brand without a designer in the loop.</p>
+
+    <h3>Why the HTML/CSS/JS foundation is what makes this easy</h3>
+    <p>None of that flexibility is free — it falls out of one architectural choice: a composition is a <strong>web page</strong>, not a proprietary project format. That single fact is why integration is cheap:</p>
+    <ul>
+      <li><strong>No new language, and it's the one everyone already knows.</strong> Not a node graph or a compositing DSL — HTML/CSS/JS. The talent pool is the whole web. It's also exactly why Mode 2 works: authoring a composition is authoring a webpage, the most-represented thing in a model's training data, so an LLM does it reliably and a linter can check it. A proprietary format would make "AI designs the video" a research project.</li>
+      <li><strong>The web ecosystem is your component library.</strong> GSAP, D3, Three.js, Lottie, Chart.js, SVG, WebGL, web fonts — anything that renders in a browser renders in a composition. You don't rebuild charts or easing; you import them. Your existing brand CSS, tokens, and logos drop in directly, so "on-brand" is free.</li>
+      <li><strong>The hard parts of motion graphics come free.</strong> Text wrapping, flexbox/grid layout, i18n, emoji, responsive units — the browser already solves them. A native engine reimplements every one. Change aspect ratio and CSS just reflows.</li>
+      <li><strong>The integration seam is "emit a string," not "link an SDK."</strong> A host only has to produce HTML. Every language can do that — Node, Rails, Python, a serverless function. Data binding is a JSON global (<code>window.TIMELINE = {…}</code> — literally what this extension does). No native library, no ABI, no graphics context.</li>
+      <li><strong>The preview loop is a browser refresh,</strong> and <strong>compositions are just text files</strong> — they version-control, diff, code-review, and read transparently, which is what makes them lintable and closes the Mode-2 author→lint→fix loop.</li>
+      <li><strong>The renderer already exists everywhere.</strong> HyperFrames seeks headless Chromium — ubiquitous, free, battle-tested — so it never ships a bespoke renderer into each host. "Seek to time <em>t</em>, screenshot" maps perfectly onto a browser you've written as a pure function of time.</li>
+    </ul>
+    <p>The through-line: HTML/CSS/JS turns video from a specialized native-graphics problem into a <em>web</em> problem — so the existing web workforce, web libraries, browsers, <em>and</em> LLMs are all instantly pointed at it. A few concrete places the exact same code drops in:</p>
+    <div class="integrations">
+      <div class="icard"><span class="cat">Fitness</span><span class="prod">Strava</span><span class="flow">GPS route, splits, heart rate <span class="arrow">→</span> a highlight reel with the map drawing in time to your pace</span></div>
+      <div class="icard"><span class="cat">Commerce</span><span class="prod">Shopify</span><span class="flow">product photos, price, reviews <span class="arrow">→</span> an auto-cut video ad per product; an "order shipped" clip per customer</span></div>
+      <div class="icard"><span class="cat">Dev</span><span class="prod">GitHub</span><span class="flow">a release's merged PRs and commits <span class="arrow">→</span> an animated changelog / ship-reel; a repo year-in-review</span></div>
+      <div class="icard"><span class="cat">Finance</span><span class="prod">Stripe</span><span class="flow">revenue events and MRR <span class="arrow">→</span> a "$10k MRR" milestone video; a monthly team recap</span></div>
+      <div class="icard"><span class="cat">Design</span><span class="prod">Figma</span><span class="flow">frames and prototype flows <span class="arrow">→</span> an animated walkthrough paced by the flow</span></div>
+      <div class="icard"><span class="cat">Data / BI</span><span class="prod">Sheets · Notion · Airtable</span><span class="flow">a range or database view <span class="arrow">→</span> an animated chart video (HyperFrames ships a data-chart block for exactly this)</span></div>
+      <div class="icard"><span class="cat">Team</span><span class="prod">Slack</span><span class="flow">a slash command over channel activity <span class="arrow">→</span> a "wins of the week" recap posted back to the channel</span></div>
+      <div class="icard"><span class="cat">Consumer</span><span class="prod">Wrapped-style recaps</span><span class="flow">a user's yearly stats <span class="arrow">→</span> a personalized year-in-review (the whole Spotify-Wrapped genre)</span></div>
+      <div class="icard"><span class="cat">Wellness</span><span class="prod">Oura · Whoop</span><span class="flow">sleep and recovery time-series <span class="arrow">→</span> a weekly recovery recap</span></div>
+      <div class="icard"><span class="cat">Gaming</span><span class="prod">Chess.com · game APIs</span><span class="flow">a match's moves and stats <span class="arrow">→</span> a replay with a live eval bar, or a post-match highlight card</span></div>
+      <div class="icard"><span class="cat">Infra</span><span class="prod">CI/CD · Vercel</span><span class="flow">a deploy or coverage trend <span class="arrow">→</span> a status clip or an animated postmortem</span></div>
+      <div class="icard"><span class="cat">Creative</span><span class="prod">Other DAWs & editors</span><span class="flow">the same plugin pattern in FL Studio, Bitwig, or a video editor's auto lower-thirds</span></div>
+    </div>
+    <p>None of these need a video team or a render farm — just the product's own data and an HTML composition. The Ableton extension in this post is one row of that table; the others are the same four steps with a different first one. That's the whole point of building on HyperFrames: the renderer is the boring, solved part, so the interesting work is only ever "what data, and what should it look like."</p>
 
   </div>
 
