@@ -123,14 +123,30 @@ export async function renderCloud(
   if (!renderId) throw new Error(`Cloud submit returned no render_id: ${JSON.stringify(submit).slice(0, 300)}`);
   onProgress?.('uploading', 100);
 
-  // Poll until completed.
-  for (;;) {
-    signal?.throwIfAborted();
-    await sleep(5000, signal);
-    const st = await api('GET', `/v3/hyperframes/renders/${renderId}`, apiKey, undefined, signal);
+  // Poll until completed, with an overall cap and tolerance for transient errors
+  // and unexpected/stalled statuses (so we never hang the progress dialog forever).
+  const POLL_MS = 5000;
+  const MAX_POLLS = 240; // ~20 minutes
+  let consecutiveErrors = 0;
+  for (let i = 0; i < MAX_POLLS; i++) {
+    // The polyfilled AbortSignal shim has no throwIfAborted(); check .aborted.
+    if (signal?.aborted) throw new Error('cancelled');
+    await sleep(POLL_MS, signal);
+
+    let st: any;
+    try {
+      st = await api('GET', `/v3/hyperframes/renders/${renderId}`, apiKey, undefined, signal);
+      consecutiveErrors = 0;
+    } catch (e) {
+      // A transient blip shouldn't abandon an already-uploaded, rendering job.
+      if (signal?.aborted) throw new Error('cancelled');
+      if (++consecutiveErrors >= 4) throw e;
+      continue;
+    }
+
     const s = st.status ?? st.data?.status;
     const pct = Number(st.progress ?? st.data?.progress ?? 0);
-    if (s === 'completed') {
+    if (s === 'completed' || s === 'success' || s === 'done') {
       const videoUrl: string | undefined = st.video_url ?? st.data?.video_url;
       if (!videoUrl) throw new Error('Render completed but no video_url in response.');
       onProgress?.('downloading', 0);
@@ -140,11 +156,12 @@ export async function renderCloud(
       onProgress?.('downloading', 100);
       return outFile;
     }
-    if (s === 'failed' || s === 'error') {
-      throw new Error(`Cloud render failed: ${st.error ?? st.data?.error ?? 'unknown error'}`);
+    if (s === 'failed' || s === 'error' || s === 'cancelled' || s === 'expired') {
+      throw new Error(`Cloud render ${s}: ${st.error ?? st.data?.error ?? 'unknown error'}`);
     }
     onProgress?.('rendering', Number.isFinite(pct) ? pct : 0);
   }
+  throw new Error('Cloud render timed out.');
 }
 
 // ---------------------------------------------------------------- internals
@@ -253,6 +270,7 @@ function run(cmd: string, args: string[], cwd: string): Promise<void> {
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error('cancelled')); // already aborted
     const t = setTimeout(resolve, ms);
     signal?.addEventListener('abort', () => {
       clearTimeout(t);

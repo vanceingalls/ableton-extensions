@@ -68,7 +68,12 @@ export async function getProjectSummary(sel: SelectionContext): Promise<ProjectS
   const song = ctx.application.song;
   const scopeTracks = sel.tracks && sel.tracks.length ? sel.tracks : [...song.tracks];
   const start = sel.startBeat;
-  const region = sel.durationBeats || regionFromTracks(scopeTracks) - start;
+  // A zero-width selection (insert marker, no drag) has durationBeats 0 — fall
+  // back to the span from `start` to the last clip end, clamped so a marker past
+  // all clips gives an empty (not inverted/negative) window.
+  const region = sel.durationBeats > 0
+    ? sel.durationBeats
+    : Math.max(0, regionFromTracks(scopeTracks) - start);
   const end = start + region;
 
   const tracks: TrackSummary[] = [];
@@ -85,15 +90,10 @@ export async function getProjectSummary(sel: SelectionContext): Promise<ProjectS
       if (clipEnd <= start || clipStart >= end) continue; // outside the window
       if (color === undefined) color = colorToHex(clip.color);
       if (clip instanceof MidiClip) {
-        for (const n of clip.notes) {
-          if (n.muted) continue;
-          const abs = clipStart + num(n.startTime); // absolute arrangement beat
-          if (abs < start || abs >= end) continue;
-          noteCount++;
-          const p = num(n.pitch);
-          if (p < minPitch) minPitch = p;
-          if (p > maxPitch) maxPitch = p;
-        }
+        const c = collectMidiNotes(clip, start, end);
+        noteCount += c.count;
+        if (c.minPitch < minPitch) minPitch = c.minPitch;
+        if (c.maxPitch > maxPitch) maxPitch = c.maxPitch;
       }
     }
     totalNotes += noteCount;
@@ -130,6 +130,57 @@ function regionFromTracks(tracks: Track<V>[]): number {
     for (const c of t.arrangementClips) end = Math.max(end, num(c.endTime));
   }
   return end;
+}
+
+/**
+ * Count MIDI note ONSETS that actually sound inside the arrangement window
+ * [winStart, winEnd). `MidiClip.notes` are content-relative to a single loop
+ * cycle, so we map each onset to its arrangement beat via the clip's start
+ * marker (trim) and expand looping clips across their arrangement span —
+ * otherwise a looping clip is undercounted (only one cycle) and a trimmed clip's
+ * notes land at the wrong beat. Approximate but structurally faithful.
+ */
+function collectMidiNotes(clip: MidiClip<V>, winStart: number, winEnd: number) {
+  const clipStart = num(clip.startTime);
+  const clipEnd = num(clip.endTime);
+  const startMarker = num(clip.startMarker);
+  const lo = Math.max(winStart, clipStart);
+  const hi = Math.min(winEnd, clipEnd);
+  const looping = clip.looping;
+  const loopStart = num(clip.loopStart);
+  const loopEnd = num(clip.loopEnd);
+  const loopLen = loopEnd - loopStart;
+  const MAX_REPEATS = 100_000; // guard against a pathologically tiny loop length
+
+  let count = 0;
+  let minPitch = Infinity;
+  let maxPitch = -Infinity;
+  const hit = (arrBeat: number, pitch: number) => {
+    if (arrBeat < lo || arrBeat >= hi) return;
+    count++;
+    if (pitch < minPitch) minPitch = pitch;
+    if (pitch > maxPitch) maxPitch = pitch;
+  };
+
+  for (const n of clip.notes) {
+    if (n.muted) continue;
+    const c = num(n.startTime); // content-relative beat
+    const p = num(n.pitch);
+    if (!looping) {
+      hit(clipStart + (c - startMarker), p); // single pass, trim-adjusted
+      continue;
+    }
+    // First pass plays content [startMarker, loopEnd)…
+    if (c >= startMarker && c < loopEnd) hit(clipStart + (c - startMarker), p);
+    // …then [loopStart, loopEnd) repeats until the clip ends.
+    if (loopLen > 0 && c >= loopStart && c < loopEnd) {
+      let arrBeat = clipStart + (loopEnd - startMarker) + (c - loopStart);
+      for (let k = 0; arrBeat < clipEnd && k < MAX_REPEATS; k++, arrBeat += loopLen) {
+        hit(arrBeat, p);
+      }
+    }
+  }
+  return { count, minPitch, maxPitch };
 }
 
 // ---------------------------------------------------------------- host services

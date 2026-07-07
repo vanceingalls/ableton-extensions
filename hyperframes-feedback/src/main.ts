@@ -52,7 +52,8 @@ export async function activate(activation: unknown): Promise<void> {
         console.log('manage keys invoked');
         void runKeySettings().catch((e) => console.error('key settings failed:', e));
       },
-      [...live.CLIP_SCOPES, ...live.PROJECT_SCOPES], // reachable from any right-click
+      // reachable from any right-click; dedup because PROJECT_SCOPES ⊆ CLIP_SCOPES
+      [...new Set([...live.CLIP_SCOPES, ...live.PROJECT_SCOPES])],
     );
     console.log('activate: context-menu actions registered');
   } catch (e) {
@@ -181,10 +182,14 @@ async function runRenderJob(job: RenderJob, progressText: string): Promise<void>
     if (action === 'reveal') await live.revealFile(delivered);
     else if (action === 'open') await live.openFile(delivered);
   } catch (err) {
-    console.error('render failed:', (err as Error)?.message ?? err);
-    await live
-      .showStudioDialog(errorDialogUrl(String((err as Error)?.message ?? err)), 520, 240)
-      .catch(() => {});
+    const message = String((err as Error)?.message ?? err);
+    // Cancelling the progress dialog aborts the render — that's not an error.
+    if (message === 'cancelled' || (err as Error)?.name === 'AbortError' || /abort(ed)?/i.test(message)) {
+      console.log('render cancelled by user');
+      return;
+    }
+    console.error('render failed:', message);
+    await live.showStudioDialog(errorDialogUrl(message), 520, 240).catch(() => {});
   }
 }
 

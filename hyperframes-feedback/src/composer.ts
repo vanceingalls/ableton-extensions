@@ -92,21 +92,22 @@ export async function authorFeedbackComposition(
   let html = await authorHtml(client, report, summary, width, height);
   await fs.writeFile(path.join(workDir, 'index.html'), html, 'utf8');
 
+  let errors: LintFinding[] = [];
   for (let round = 1; round <= MAX_FIX_ROUNDS; round++) {
-    const errors = (await lint(workDir)).filter((f) => f.severity === "error");
-    if (!errors.length) {
-      onProgress?.(round > 1 ? 'Fixed all issues.' : 'Composition is clean.');
-      return { html, durationSeconds: readDuration(html) };
-    }
+    errors = (await lint(workDir)).filter((f) => f.severity === 'error');
+    if (!errors.length) break;
     onProgress?.(`Fixing ${errors.length} issue(s) (round ${round})…`);
     html = await fixHtml(client, html, errors);
     await fs.writeFile(path.join(workDir, 'index.html'), html, 'utf8');
   }
-  // Still not clean — one last lint to decide.
-  const remaining = (await lint(workDir)).filter((f) => f.severity === "error");
-  if (remaining.length) {
-    throw new Error(`Composition still has ${remaining.length} lint error(s) after ${MAX_FIX_ROUNDS} fixes.`);
+  if (errors.length) {
+    throw new Error(`Composition still has ${errors.length} lint error(s) after ${MAX_FIX_ROUNDS} fixes.`);
   }
+  // Backstop lint (a no-op under Live's sandbox) with an in-process check, so a
+  // structurally broken composition still falls back to the fixed template.
+  const problem = basicValidate(html);
+  if (problem) throw new Error(`Authored composition rejected: ${problem}`);
+  onProgress?.('Composition is clean.');
   return { html, durationSeconds: readDuration(html) };
 }
 
@@ -168,10 +169,28 @@ async function fixHtml(client: Anthropic, html: string, errors: LintFinding[]): 
 async function finalText(stream: ReturnType<Anthropic['messages']['stream']>): Promise<string> {
   const msg = await stream.finalMessage();
   if (msg.stop_reason === 'refusal') throw new Error('The model declined to author the composition.');
+  // A truncated composition (unclosed tags/script) would render broken. Treat it
+  // as a failure so the caller falls back to the fixed template.
+  if (msg.stop_reason === 'max_tokens') throw new Error('The composition hit max_tokens and was truncated.');
   const block = msg.content.find((b: Anthropic.ContentBlock) => b.type === 'text');
   const text = block && block.type === 'text' ? block.text : undefined;
   if (!text) throw new Error('No composition returned.');
   return text;
+}
+
+/**
+ * In-process sanity check (no subprocess). `hyperframes lint` is a child Node
+ * process and can't run under Live's sandbox, so lint() returns [] there and
+ * catches nothing — this backstops it for the failure modes that make a render
+ * blank or frozen, so a broken authored composition still falls back to the
+ * fixed template instead of being rendered. Returns a reason string, or null.
+ */
+function basicValidate(html: string): string | null {
+  if (!/data-composition-id\s*=\s*["']main["']/.test(html)) return 'missing root data-composition-id="main"';
+  if (!/window\.__timelines\s*\[\s*['"]main['"]\s*\]\s*=/.test(html))
+    return "no window.__timelines['main'] registration (would render frozen)";
+  if (!/gsap\.timeline\s*\(/.test(html)) return 'no GSAP timeline';
+  return null;
 }
 
 function stripFences(s: string): string {
