@@ -119,7 +119,7 @@ crucial part is the banner — an IIFE that runs before any bundled module and
 restores every stripped global that Node can hand back via require (TextEncoder,
 URL, Blob, the ReadableStream family, performance, MessageChannel, and so on).
 This is fix #1 for the "stripped globals" constraint. The build also inlines the
-template files (via a codegen step) so the sandboxed extension never has to read
+template files (via a codegen step), so the sandboxed extension never has to read
 its own install directory.
 
 THE POLYFILL LAYER: GLOBALS WITH NO REQUIREABLE SOURCE
@@ -296,7 +296,7 @@ Before rendering, the composition's files are written into the work dir. Because
 the sandbox forbids reading our own install dir, template files are inlined into
 the bundle at build time (a codegen step produces a map of assets) and written
 from memory. We also patch the root's data-duration / data-width / data-height
-from the timeline (HyperFrames reads size and duration from the HTML, not CLI
+from the timeline (HyperFrames reads size and duration from the HTML, not the CLI
 flags) and inline the data as JS.
 
 THE FULL MODE 1 FLOW
@@ -444,7 +444,7 @@ back through the native bridge (window.webkit.messageHandlers.live on macOS /
 window.chrome.webview on Windows) via
 { method:'close_and_send', params:[value] } and closes. To pass data into a
 dialog, string-replace a token in the HTML before encoding — keep the token a
-valid JS literal so the page still parses un-injected.
+valid JS literal, so the page still parses un-injected.
 
 PROGRESS, AND PUTTING THE FILE BACK
 
@@ -588,7 +588,7 @@ A FEW CONCRETE PLACES THE EXACT SAME CODE DROPS IN
 
 None of these need a video team or a render farm — just the product's own data and
 an HTML composition. The Ableton extension in this post is one row of that table;
-the others are the same four steps with a different first one. That's the whole
+the others are the same four steps, with a different first one. That's the whole
 point of building on HyperFrames: the renderer is the boring, solved part, so the
 interesting work is only ever "what data, and what should it look like."
 

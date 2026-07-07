@@ -677,7 +677,7 @@ execFileSync(<span class="cm">'node'</span>, [<span class="cm">'tools/gen-templa
   <span class="kw">for</span> (<span class="kw">const</span> [name, content] <span class="kw">of</span> Object.entries(assets))
     <span class="kw">await</span> fs.writeFile(path.join(job.workDir, name), content);
 
-  <span class="cm">// HyperFrames reads size/duration from the HTML, not CLI flags — patch them.</span>
+  <span class="cm">// HyperFrames reads size/duration from the HTML, not the CLI flags — patch them.</span>
   <span class="kw">const</span> idx = path.join(job.workDir, <span class="cm">'index.html'</span>);
   <span class="kw">const</span> { width, height } = job.timeline.video;
   <span class="kw">const</span> html = (<span class="kw">await</span> fs.readFile(idx, <span class="cm">'utf8'</span>))
@@ -1037,7 +1037,7 @@ Output ONLY the complete HTML document.`;</code></pre></div>
   <span class="kw">if</span> (key) <span class="kw">await</span> persistApiKey(live.storageDirectory()!, key);
   <span class="kw">return</span> key || <span class="kw">null</span>;
 }</code></pre></div>
-    <p>To pass data <em>into</em> a dialog, string-replace a token in the HTML before encoding — keep the token a valid JS literal so the page still parses un-injected:</p>
+    <p>To pass data <em>into</em> a dialog, string-replace a token in the HTML before encoding — keep the token a valid JS literal, so the page still parses un-injected:</p>
     <div class="code"><div class="cap"><span>main.ts — injecting the timeline into the studio dialog</span><span class="lang">ts</span></div>
 <pre><code><span class="kw">const</span> injected = STUDIO_HTML.replace(<span class="cm">'null /*__STUDIO_DATA__*/'</span>,
   JSON.stringify({ timeline, availableStyles, audioAvailable }));
@@ -1129,7 +1129,7 @@ Output ONLY the complete HTML document.`;</code></pre></div>
       <div class="icard"><span class="cat">Infra</span><span class="prod">CI/CD · Vercel</span><span class="flow">a deploy or coverage trend <span class="arrow">→</span> a status clip or an animated postmortem</span></div>
       <div class="icard"><span class="cat">Creative</span><span class="prod">Other DAWs & editors</span><span class="flow">the same plugin pattern in FL Studio, Bitwig, or a video editor's auto lower-thirds</span></div>
     </div>
-    <p>None of these need a video team or a render farm — just the product's own data and an HTML composition. The Ableton extension in this post is one row of that table; the others are the same four steps with a different first one. That's the whole point of building on HyperFrames: the renderer is the boring, solved part, so the interesting work is only ever "what data, and what should it look like."</p>
+    <p>None of these need a video team or a render farm — just the product's own data and an HTML composition. The Ableton extension in this post is one row of that table; the others are the same four steps, with a different first one. That's the whole point of building on HyperFrames: the renderer is the boring, solved part, so the interesting work is only ever "what data, and what should it look like."</p>
 
   </div>
 
