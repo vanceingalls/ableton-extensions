@@ -4,11 +4,18 @@ A collection of [Ableton Live 12](https://www.ableton.com/) Extensions that turn
 video using [HyperFrames](https://hyperframes.heygen.com). Each extension is a self-contained
 TypeScript/Node project; the shared engineering notes live in [`docs/`](docs/).
 
+## Start here
+
+New to this? [**`hyperframes-starter/`**](hyperframes-starter/) is a minimal, working scaffold —
+right-click a MIDI clip → render its notes to a music-locked video. ~10 commented files covering the
+whole loop (SDK read → Timeline → composition → render → import) so you don't begin from a blank folder.
+
 ## Extensions
 
-| Extension | What it does |
+| Project | What it does |
 | --- | --- |
-| [`hyperframes-feedback/`](hyperframes-feedback/) | Right-click a clip/track → **Render Video…** for a beat-accurate music visualizer, or an arrangement selection → **Create Feedback Video from Selection…** where Claude reviews the project and *designs* the video presenting its review. Renders via HyperFrames Cloud and imports the MP4 back into the Set. |
+| [`hyperframes-starter/`](hyperframes-starter/) | **Minimal starter template.** The smallest end-to-end integration: a clip's notes → a canvas HyperFrames composition → MP4 back in the Set. Copy it and build up. |
+| [`hyperframes-feedback/`](hyperframes-feedback/) | The full extension. Right-click a clip/track → **Render Video…** for a beat-accurate visualizer, or an arrangement selection → **Create Feedback Video from Selection…** where Claude reviews the project and *designs* the video presenting its review. Renders via HyperFrames Cloud and imports the MP4 back into the Set. |
 
 ## Docs
 

@@ -1,0 +1,105 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>starter composition</title>
+  <style>
+    html, body { margin: 0; background: #0b0b0e; overflow: hidden; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <!--
+    HyperFrames composition root. The renderer reads size + duration from these
+    data-* attributes (render.ts patches them from your Timeline before render).
+  -->
+  <div id="root" data-composition-id="main" data-start="0"
+       data-duration="8" data-width="1080" data-height="1920">
+    <canvas id="c"></canvas>
+  </div>
+
+  <!-- Your data, inlined by render.ts as `window.TIMELINE` (no runtime fetch). -->
+  <script src="./data.js"></script>
+
+  <script>
+    /*
+     * A CANVAS composition is driven by the `hf-seek` event: each frame the
+     * renderer sets a virtual time (in seconds) and screenshots the canvas.
+     * Draw everything as a pure function of `t` and the render is deterministic
+     * and locked to the music. No Date.now(), no rAF state, no Math.random().
+     */
+
+    // Register a synchronous stub so the renderer's timeline poll returns at
+    // once (this composition animates via hf-seek, not a GSAP timeline).
+    window.__timelines = window.__timelines || {};
+    window.__timelines['main'] = {
+      pause() { return this; }, paused() { return true; },
+      seek() { return this; }, totalTime() { return 0; },
+    };
+
+    const T = window.TIMELINE;
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    canvas.width = T.width;
+    canvas.height = T.height;
+
+    // Vertical placement spans the note range (with a sensible default window).
+    const pitches = T.notes.map((n) => n.pitch);
+    const lo = Math.min(48, ...pitches);
+    const hi = Math.max(84, ...pitches);
+
+    function draw(t) {
+      const W = canvas.width, H = canvas.height;
+      const beat = t * (T.bpm / 60);          // constant-tempo seconds → beats
+      const BEATS_VISIBLE = 8;
+      const pxPerBeat = W / BEATS_VISIBLE;
+      const playheadX = W * 0.25;              // "now" sits 25% across
+
+      ctx.fillStyle = '#0b0b0e';
+      ctx.fillRect(0, 0, W, H);
+
+      // Notes as horizontal bars scrolling past the playhead.
+      for (const n of T.notes) {
+        const x = playheadX + (n.startBeat - beat) * pxPerBeat;
+        const w = Math.max(6, n.lengthBeats * pxPerBeat);
+        if (x + w < 0 || x > W) continue;
+        const y = H - ((n.pitch - lo) / (hi - lo || 1)) * H * 0.8 - H * 0.1;
+        const active = beat >= n.startBeat && beat < n.startBeat + n.lengthBeats;
+        ctx.globalAlpha = active ? 1 : 0.45;
+        ctx.fillStyle = active ? T.color : 'rgba(214,214,214,0.5)';
+        ctx.fillRect(x, y - 11, w, 22);
+      }
+      ctx.globalAlpha = 1;
+
+      // Playhead + title.
+      ctx.strokeStyle = T.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(playheadX, 0);
+      ctx.lineTo(playheadX, H);
+      ctx.stroke();
+
+      ctx.fillStyle = '#d6d6d6';
+      ctx.textAlign = 'center';
+      ctx.font = '700 ' + Math.round(H * 0.03) + 'px Helvetica, Arial, sans-serif';
+      ctx.fillText(T.title, W / 2, H * 0.92);
+    }
+
+    // The renderer drives the clock; detail.time is in seconds.
+    window.addEventListener('hf-seek', (e) => draw(e.detail.time));
+    window.draw = draw;
+
+    // Dev preview when opened directly in a browser (bails under the renderer).
+    function underRenderer() { return !!(window.__hf || window.__hyperframes); }
+    if (!underRenderer()) {
+      const start = performance.now();
+      (function tick() {
+        if (underRenderer()) return;
+        draw(((performance.now() - start) / 1000) % (T.durationSeconds + 1));
+        requestAnimationFrame(tick);
+      })();
+    }
+    draw(0);
+  </script>
+</body>
+</html>
