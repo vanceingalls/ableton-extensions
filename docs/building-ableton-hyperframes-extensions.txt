@@ -28,14 +28,14 @@ text with the exact error, because you'll hit the same ones.
 
 But Ableton is just the host we picked. HyperFrames renders any HTML that's a
 pure function of time, so the real subject here is a recipe — read a product's
-structured data, shape it, render it to on-brand video — that drops into almost
-any app with a plugin or API surface. Keep that in mind while you read the
+structured data, shape it, render it to an on-brand video — that drops into
+almost any app with a plugin or API surface. Keep that in mind while you read the
 SDK-specific parts; we zoom out at the end to a dozen other products where the
 exact same code fits.
 
 TL;DR
-An Ableton Extension is a bundled Node program Live runs in a sandbox. You read
-the Set through opaque handles you rehydrate into objects; integers arrive as
+An Ableton Extension is a bundled Node program that Live runs in a sandbox. You
+read the Set through opaque handles you rehydrate into objects; integers arrive as
 BigInt; there's no global menu. You shape reads into a plain Timeline JSON, feed
 it to a HyperFrames composition (an HTML file the renderer seeks frame-by-frame
 — canvas driven by an hf-seek event, or DOM driven by a paused GSAP timeline),
@@ -47,7 +47,7 @@ review and for authoring the composition.
 Assumed audience: you write TypeScript and have seen an esbuild config. You don't
 need to know HyperFrames, the Ableton Extensions SDK
 (https://ableton.github.io/extensions-sdk/), or the Anthropic API — we build each
-up from the first call. You do need Node 20+, and for the AI mode, an Anthropic
+up from the first call. You do need Node 20+ and, for the AI mode, an Anthropic
 key and a HeyGen key (they're separate accounts — more on that in Part 7).
 
 Contents:
@@ -83,7 +83,7 @@ in Live" moment is a confusion between them.
     support.
 
 The managed host imposes four constraints that shape the entire design.
-Internalize them now and the rest of this post is obvious:
+Internalize them now, and the rest of this post is obvious:
 
   1. Filesystem sandbox — you may read/write only two directories Live gives you
      (storageDirectory, tempDirectory). Not /tmp, not even your own install folder.
@@ -200,17 +200,17 @@ SPEED BUMP — Integers cross the bindings as BigInt, even where the types say
 number.
   → TypeError: Cannot mix BigInt and other types, use explicit conversions
 First seen on Clip.color, then note times/pitch/velocity. The TypeScript types
-claim number; the runtime hands you bigint. It survives until arithmetic or
+claim number; the runtime hands you a bigint. It survives until arithmetic or
 JSON.stringify, then throws far from the read that caused it. The fix is a
 discipline: coerce every integral read at the boundary through a single num()
-helper (Number(v)), and build colorToHex / clampVelocity on top of it.
+helper (Number(v)) and build colorToHex / clampVelocity on top of it.
 
 READING NOTES
 
 The core reader walks a clip's notes (skipping muted ones), offsets their
 clip-relative beats so the exported region starts at beat 0, and passes through
-probability when present. For an arrangement window it iterates the in-range
-clips on each selected MIDI track.
+probability when present. For an arrangement window, it iterates over the
+in-range clips on each selected MIDI track.
 
 WHAT THE SDK DOESN'T GIVE YOU (YET)
 
@@ -254,12 +254,12 @@ BEATS <-> SECONDS: THE ONE TIME CONVERSION
 
 HyperFrames seeks by seconds; music is in beats. TimeBridge is the single
 implementation of that math (two implementations = drift), anchored so
-beat 0 === second 0 at the region start. At constant tempo it's a scale; the ramp
-path integrates a linearly-varying BPM (a log integral). It compiles for Node and
+beat 0 === second 0 at the region start. At constant tempo, it's a scale; the ramp
+path integrates a linearly varying BPM (a log integral). It compiles for Node and
 the browser, so the composition uses the same code to place notes.
 
-SUBTLE BUG WE FIXED. Our binary search for the active tempo segment originally
-capped at length-2. That silently extended the second-to-last segment's tempo (or
+SUBTLE BUG WE FIXED. Our binary search for the active tempo segment was
+originally capped at length-2. That silently extended the second-to-last segment's tempo (or
 worse, its ramp) past the end of the map. segmentAt must be allowed to return the
 last point — past it, the segment holds a constant BPM because the next point is
 undefined.
@@ -342,7 +342,7 @@ timeline, the determinism bans.
 
 DESIGN CHOICE. Rather than pasting a multi-thousand-word skill into every request,
 we lifted only the hard rules that break a render if violated and kept the system
-prompt tight — cheaper, and more deterministic output. You could instead hand the
+prompt tight — cheaper and more deterministic output. You could instead hand the
 model the skill file directly and let it read the full contract; the trade-off is
 prompt size vs. control. Either way, the skills are the source of truth — write
 them down once, from the CLI, before you prompt.
@@ -408,8 +408,8 @@ never uses inline base64. It uploads via a direct-to-S3 flow and references the
 result by asset_id: POST /v3/assets/direct-uploads (with filename, content_type,
 size, sha256) -> PUT the bytes to the presigned URL (no api key on that request)
 -> POST /v3/assets/{id}/complete (retry on 409) -> submit the render with
-{type:'asset_id', asset_id}. We replicated that exactly and it went through first
-try. Then poll GET /v3/hyperframes/renders/{id} every 5s until completed, and
+{type:'asset_id', asset_id}. We replicated that exactly, and it went through on the
+first try. Then poll GET /v3/hyperframes/renders/{id} every 5s until completed, and
 download the video_url.
 
 The api() helper is a thin fetch wrapper that sets x-api-key and surfaces the
@@ -421,7 +421,7 @@ NOT A BUG — A BILLING FACT. The two APIs have separate wallets.
   → HTTP 402 insufficient_credit — "At least 9.0 API credits are required to render"
 The review (Anthropic) and the render (HeyGen) are separate services with separate
 billing. Money in your Anthropic account does nothing for HeyGen rendering, and
-vice versa. Surface this in your UI or users will file it as a bug. Which means you
+vice versa. Surface this in your UI, or users will file it as a bug. Which means you
 store two keys.
 
 TWO KEYS, RESOLVED AND STORED
@@ -449,7 +449,7 @@ valid JS literal so the page still parses un-injected.
 PROGRESS, AND PUTTING THE FILE BACK
 
 withProgress wraps work in Live's progress dialog and hands you a reporter and an
-AbortSignal (thread it into the cloud poll so Cancel works). importIntoProject
+AbortSignal (thread it into the cloud poll, so Cancel works). importIntoProject
 closes the loop. Reveal/Open spawn native open/explorer/xdg-open.
 
 LAST MANAGED-HOST TRAP — No dynamic import().
@@ -502,7 +502,7 @@ work; (4) target cloud rendering from the start, treat local render as a dev
 convenience; (5) if you add the AI mode, expect two separate API bills and store
 two keys.
 
-The SDK is beta and it shows — but the primitives are right, and importIntoProject
+The SDK is beta, and it shows — but the primitives are right, and importIntoProject
 closing the loop is what makes an extension feel native rather than like an export
 button. Everything above is the tax to get there. Now you don't pay it twice.
 
@@ -540,9 +540,9 @@ why integration is cheap:
     Chart.js, SVG, WebGL, web fonts — anything that renders in a browser renders in
     a composition. You don't rebuild charts or easing; you import them. Your
     existing brand CSS, tokens, and logos drop in directly, so "on-brand" is free.
-  - The hard parts of motion graphics come free. Text wrapping, flexbox/grid
+  - The hard parts of motion graphics come for free. Text wrapping, flexbox/grid
     layout, i18n, emoji, responsive units — the browser already solves them. A
-    native engine reimplements every one. Change aspect ratio and CSS just reflows.
+    native engine reimplements every one. Change the aspect ratio and CSS just reflows.
   - The integration seam is "emit a string," not "link an SDK." A host only has to
     produce HTML. Every language can do that — Node, Rails, Python, a serverless
     function. Data binding is a JSON global (window.TIMELINE = {…} — literally what

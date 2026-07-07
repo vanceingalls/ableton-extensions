@@ -197,15 +197,15 @@
   <div class="wrap">
 
     <p class="lede">We built an Ableton Live Extension that does two things from a right-click: turn a selected clip into a beat-accurate visualizer, and generate an AI "feedback video" where a model reviews the project and <em>designs</em> the clip that presents its review. This post is the whole build — enough real code to recreate it, both render modes, and both API integrations. Where we hit a wall, the wall is in the text with the exact error, because you'll hit the same ones.</p>
-    <p>But Ableton is just the host we picked. HyperFrames renders <em>any</em> HTML that's a pure function of time, so the real subject here is a <strong>recipe</strong> — read a product's structured data, shape it, render it to on-brand video — that drops into almost any app with a plugin or API surface. Keep that in mind while you read the SDK-specific parts; we zoom out at the end to a dozen other products where the exact same code fits.</p>
+    <p>But Ableton is just the host we picked. HyperFrames renders <em>any</em> HTML that's a pure function of time, so the real subject here is a <strong>recipe</strong> — read a product's structured data, shape it, render it to an on-brand video — that drops into almost any app with a plugin or API surface. Keep that in mind while you read the SDK-specific parts; we zoom out at the end to a dozen other products where the exact same code fits.</p>
 
     <div class="tldr">
       <span class="lbl">TL;DR</span>
-      <p>An Ableton Extension is a bundled Node program Live runs in a sandbox. You read the Set through opaque <em>handles</em> you rehydrate into objects; integers arrive as <code>BigInt</code>; there's no global menu. You shape reads into a plain <code>Timeline</code> JSON, feed it to a HyperFrames composition (an HTML file the renderer seeks frame-by-frame — canvas driven by an <code>hf-seek</code> event, or DOM driven by a paused GSAP timeline), and render. Local rendering is impossible in a real install because the Node sandbox is inherited by child processes, so the shipped path is a network render (HyperFrames Cloud / HeyGen). The AI mode adds a second API — Anthropic — for the review and for authoring the composition.</p>
+      <p>An Ableton Extension is a bundled Node program that Live runs in a sandbox. You read the Set through opaque <em>handles</em> you rehydrate into objects; integers arrive as <code>BigInt</code>; there's no global menu. You shape reads into a plain <code>Timeline</code> JSON, feed it to a HyperFrames composition (an HTML file the renderer seeks frame-by-frame — canvas driven by an <code>hf-seek</code> event, or DOM driven by a paused GSAP timeline), and render. Local rendering is impossible in a real install because the Node sandbox is inherited by child processes, so the shipped path is a network render (HyperFrames Cloud / HeyGen). The AI mode adds a second API — Anthropic — for the review and for authoring the composition.</p>
     </div>
 
     <div class="aud">
-      <b>Assumed audience:</b> you write TypeScript and have seen an esbuild config. You don't need to know HyperFrames, the <a href="https://ableton.github.io/extensions-sdk/">Ableton Extensions SDK</a>, or the Anthropic API — we build each up from the first call. You <b>do</b> need Node 20+, and for the AI mode, an Anthropic key and a HeyGen key (they're separate accounts — more on that in Part 6).
+      <b>Assumed audience:</b> you write TypeScript and have seen an esbuild config. You don't need to know HyperFrames, the <a href="https://ableton.github.io/extensions-sdk/">Ableton Extensions SDK</a>, or the Anthropic API — we build each up from the first call. You <b>do</b> need Node 20+ and, for the AI mode, an Anthropic key and a HeyGen key (they're separate accounts — more on that in Part 6).
     </div>
 
     <div class="toc">
@@ -232,7 +232,7 @@
       <li><strong>The dev host</strong> — <code>extensions-cli run</code>, launched from your shell with Developer Mode on. Inherits your full environment. No filesystem sandbox, no Node permission model. Everything works — which is why it lies to you.</li>
       <li><strong>The managed host</strong> — what a real user gets after installing a packaged <code>.ablx</code> with Developer Mode off. Live spawns your Node process under a hard permission sandbox and strips a pile of web globals. <em>This</em> is the environment you must support.</li>
     </ul>
-    <p>The managed host imposes four constraints that shape the entire design. Internalize them now and the rest of this post is obvious:</p>
+    <p>The managed host imposes four constraints that shape the entire design. Internalize them now, and the rest of this post is obvious:</p>
     <ol>
       <li><strong>Filesystem sandbox</strong> — you may read/write only two directories Live gives you (<code>storageDirectory</code>, <code>tempDirectory</code>). Not <code>/tmp</code>, not even your own install folder.</li>
       <li><strong>Child processes inherit the sandbox</strong> — and can never be granted more. A spawned Node CLI is dead on arrival.</li>
@@ -475,7 +475,7 @@ execFileSync(<span class="cm">'node'</span>, [<span class="cm">'tools/gen-templa
       <span class="tag">Speed bump</span>
       <h4>Integers cross the bindings as BigInt, even where the types say <code>number</code></h4>
       <div class="readout">TypeError: Cannot mix BigInt and other types, use explicit conversions</div>
-      <p>First seen on <code>Clip.color</code>, then note times/pitch/velocity. The TypeScript types claim <code>number</code>; the runtime hands you <code>bigint</code>. It survives until arithmetic or <code>JSON.stringify</code>, then throws far from the read that caused it. The fix is a discipline: coerce every integral read <em>at the boundary</em>.</p>
+      <p>First seen on <code>Clip.color</code>, then note times/pitch/velocity. The TypeScript types claim <code>number</code>; the runtime hands you a <code>bigint</code>. It survives until arithmetic or <code>JSON.stringify</code>, then throws far from the read that caused it. The fix is a discipline: coerce every integral read <em>at the boundary</em>.</p>
     </div>
     <div class="code"><div class="cap"><span>liveAdapter.ts — the coercions everything routes through</span><span class="lang">ts</span></div>
 <pre><code><span class="kw">function</span> num(v: <span class="kw">number</span> | <span class="kw">bigint</span> | undefined, fallback = <span class="cm">0</span>): <span class="kw">number</span> {
@@ -580,7 +580,7 @@ execFileSync(<span class="cm">'node'</span>, [<span class="cm">'tools/gen-templa
 }</code></pre></div>
 
     <h2>Beats ↔ seconds: the one time conversion</h2>
-    <p>HyperFrames seeks by <strong>seconds</strong>; music is in <strong>beats</strong>. <code>TimeBridge</code> is the single implementation of that math (two implementations = drift), anchored so <code>beat 0 === second 0</code> at the region start. At constant tempo it's a scale; the ramp path integrates properly. It compiles for Node <em>and</em> the browser, so the composition uses the same code to place notes.</p>
+    <p>HyperFrames seeks by <strong>seconds</strong>; music is in <strong>beats</strong>. <code>TimeBridge</code> is the single implementation of that math (two implementations = drift), anchored so <code>beat 0 === second 0</code> at the region start. At constant tempo, it's a scale; the ramp path integrates properly. It compiles for Node <em>and</em> the browser, so the composition uses the same code to place notes.</p>
     <div class="code"><div class="cap"><span>timebridge.ts — the core conversions</span><span class="lang">ts</span></div>
 <pre><code><span class="kw">export class</span> TimeBridge {
   <span class="kw">constructor</span>(<span class="kw">private</span> map: TempoPoint[]) {
@@ -605,7 +605,7 @@ execFileSync(<span class="cm">'node'</span>, [<span class="cm">'tools/gen-templa
 }</code></pre></div>
     <div class="call note">
       <span class="tag">Subtle bug we fixed</span>
-      <p>Our binary search for the active tempo segment originally capped at <code>length-2</code>. That silently extended the second-to-last segment's tempo (or worse, its ramp) past the end of the map. <code>segmentAt</code> must be allowed to return the <em>last</em> point — past it, <code>segmentSeconds</code> holds a constant BPM because <code>map[i+1]</code> is <code>undefined</code>.</p>
+      <p>Our binary search for the active tempo segment was originally capped at <code>length-2</code>. That silently extended the second-to-last segment's tempo (or worse, its ramp) past the end of the map. <code>segmentAt</code> must be allowed to return the <em>last</em> point — past it, <code>segmentSeconds</code> holds a constant BPM because <code>map[i+1]</code> is <code>undefined</code>.</p>
     </div>
 
     <!-- ============================ PART 4 ============================ -->
@@ -795,7 +795,7 @@ npx hyperframes render DIR       <span class="cm"># local render (dev host only)
     <div class="call note">
       <span class="tag">Design choice</span>
       <h4>We distilled the skill into the prompt, not dumped it</h4>
-      <p>Rather than pasting a multi-thousand-word skill into every request, we lifted <em>only</em> the hard rules that break a render if violated and kept the system prompt tight — cheaper, and more deterministic output. If you'd rather, you can hand the model the skill file directly and let it read the full contract; the trade-off is prompt size vs. control. Either way, the skills are the source of truth — write them down once, from the CLI, before you prompt.</p>
+      <p>Rather than pasting a multi-thousand-word skill into every request, we lifted <em>only</em> the hard rules that break a render if violated and kept the system prompt tight — cheaper and more deterministic output. If you'd rather, you can hand the model the skill file directly and let it read the full contract; the trade-off is prompt size vs. control. Either way, the skills are the source of truth — write them down once, from the CLI, before you prompt.</p>
     </div>
 
     <h2>Claude authors the composition — then lints and fixes it</h2>
@@ -985,7 +985,7 @@ Output ONLY the complete HTML document.`;</code></pre></div>
       <span class="tag">Not a bug — a billing fact</span>
       <h4>The two APIs have separate wallets</h4>
       <div class="readout">HTTP 402 insufficient_credit — "At least 9.0 API credits are required to render"</div>
-      <p>The review (Anthropic) and the render (HeyGen) are separate services with separate billing. Money in your Anthropic account does nothing for HeyGen rendering, and vice versa. Surface this in your UI or users will file it as a bug. Which means you need to store <em>two</em> keys.</p>
+      <p>The review (Anthropic) and the render (HeyGen) are separate services with separate billing. Money in your Anthropic account does nothing for HeyGen rendering, and vice versa. Surface this in your UI, or users will file it as a bug. Which means you need to store <em>two</em> keys.</p>
     </div>
 
     <h2>Two keys, resolved and stored</h2>
@@ -1044,7 +1044,7 @@ Output ONLY the complete HTML document.`;</code></pre></div>
 <span class="kw">return</span> <span class="cm">'data:text/html,'</span> + encodeURIComponent(injected);</code></pre></div>
 
     <h2>Progress, and putting the file back</h2>
-    <p><code>withProgress</code> wraps work in Live's progress dialog and hands you a reporter and an <code>AbortSignal</code> (thread it into the cloud poll so Cancel works). <code>importIntoProject</code> closes the loop. And the reveal button taught us the last managed-host rule:</p>
+    <p><code>withProgress</code> wraps work in Live's progress dialog and hands you a reporter and an <code>AbortSignal</code> (thread it into the cloud poll, so Cancel works). <code>importIntoProject</code> closes the loop. And the reveal button taught us the last managed-host rule:</p>
     <div class="code"><div class="cap"><span>liveAdapter.ts — progress, and the static-import fix</span><span class="lang">ts</span></div>
 <pre><code><span class="kw">import</span> { spawn } <span class="kw">from</span> <span class="cm">'node:child_process'</span>;   <span class="cm">// STATIC — see below</span>
 
@@ -1096,7 +1096,7 @@ Output ONLY the complete HTML document.`;</code></pre></div>
     <h2>Where to start</h2>
     <p>Don't start from a blank folder — there's a <a href="https://github.com/vanceingalls/ableton-extensions/tree/main/hyperframes-starter">minimal starter template</a> in the repo that already does the whole loop (read a clip's notes → a canvas composition → render → import), in about ten commented files. Clone it, run <code>npm run check</code>, and build up from there.</p>
     <p>If you're building from scratch anyway, the order that would have saved us the most time: <strong>(1)</strong> scaffold the polyfill layer and an offline load-check on day one; <strong>(2)</strong> build <code>liveAdapter</code> as the single SDK file and route every integer through <code>num()</code>; <strong>(3)</strong> decide your scopes and prototype the menu placement before any data work; <strong>(4)</strong> target cloud rendering from the start, treat local render as a dev convenience; <strong>(5)</strong> if you add the AI mode, expect two separate API bills and store two keys.</p>
-    <p>The SDK is beta and it shows — but the primitives are right, and <code>importIntoProject</code> closing the loop is what makes an extension feel native rather than like an export button. Everything above is the tax to get there. Now you don't pay it twice.</p>
+    <p>The SDK is beta, and it shows — but the primitives are right, and <code>importIntoProject</code> closing the loop is what makes an extension feel native rather than like an export button. Everything above is the tax to get there. Now you don't pay it twice.</p>
 
     <div class="part" id="p10"><span class="pn">Part 10</span><span class="pt">Beyond Ableton</span></div>
 
@@ -1109,7 +1109,7 @@ Output ONLY the complete HTML document.`;</code></pre></div>
     <ul>
       <li><strong>No new language, and it's the one everyone already knows.</strong> Not a node graph or a compositing DSL — HTML/CSS/JS. The talent pool is the whole web. It's also exactly why Mode 2 works: authoring a composition is authoring a webpage, the most-represented thing in a model's training data, so an LLM does it reliably and a linter can check it. A proprietary format would make "AI designs the video" a research project.</li>
       <li><strong>The web ecosystem is your component library.</strong> GSAP, D3, Three.js, Lottie, Chart.js, SVG, WebGL, web fonts — anything that renders in a browser renders in a composition. You don't rebuild charts or easing; you import them. Your existing brand CSS, tokens, and logos drop in directly, so "on-brand" is free.</li>
-      <li><strong>The hard parts of motion graphics come free.</strong> Text wrapping, flexbox/grid layout, i18n, emoji, responsive units — the browser already solves them. A native engine reimplements every one. Change aspect ratio and CSS just reflows.</li>
+      <li><strong>The hard parts of motion graphics come for free.</strong> Text wrapping, flexbox/grid layout, i18n, emoji, responsive units — the browser already solves them. A native engine reimplements every one. Change the aspect ratio and CSS just reflows.</li>
       <li><strong>The integration seam is "emit a string," not "link an SDK."</strong> A host only has to produce HTML. Every language can do that — Node, Rails, Python, a serverless function. Data binding is a JSON global (<code>window.TIMELINE = {…}</code> — literally what this extension does). No native library, no ABI, no graphics context.</li>
       <li><strong>The preview loop is a browser refresh,</strong> and <strong>compositions are just text files</strong> — they version-control, diff, code-review, and read transparently, which is what makes them lintable and closes the Mode-2 author→lint→fix loop.</li>
       <li><strong>The renderer already exists everywhere.</strong> HyperFrames seeks headless Chromium — ubiquitous, free, battle-tested — so it never ships a bespoke renderer into each host. "Seek to time <em>t</em>, screenshot" maps perfectly onto a browser you've written as a pure function of time.</li>
