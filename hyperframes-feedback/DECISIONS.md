@@ -1,6 +1,17 @@
-# DECISIONS.md — Clip2Video decision log
+# DECISIONS.md — decision log
 
-Required by AGENT_INSTRUCTIONS §2/§13. Append; don't rewrite history.
+Append; don't rewrite history. Note that entries below the 2026-07-06 removal
+still describe the retired Track-to-Video feature — kept as historical record.
+
+### 2026-07-06 — Removed the Track-to-Video (visualizer) feature
+
+The music-locked visualizer render mode didn't work well, so it was removed
+entirely: the studio flow, `pulse-waveform` template, panel, `exporter.ts`,
+`timebridge.ts`, `studioServer/Protocol`, their tests, and the `hyperframes-starter`
+scaffold. `liveAdapter` was trimmed to the feedback path (`getProjectSummary`), and
+`main.ts` now registers only the feedback + Manage API Keys commands. The extension
+is now feedback-only. Earlier entries about TimeBridge, the timeline schema, warp
+markers, audio bounce, and templates refer to that retired feature.
 
 ## Decisions
 

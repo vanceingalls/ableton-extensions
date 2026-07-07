@@ -27,7 +27,7 @@ const CONTENT_TYPE_ZIP = 'application/zip';
 
 export interface RenderJob {
   workDir: string; // contains timeline.json + audio.wav
-  templateDir: string; // e.g. templates/pulse-waveform
+  templateDir: string; // 'authored', or e.g. templates/project-feedback
   timeline: Timeline;
   outFile?: string;
   /** Extra JS files to write into the bundle (e.g. feedback.js setting a global). */
