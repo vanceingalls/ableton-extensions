@@ -16,15 +16,14 @@ those two things.
 
 ## 1. What the extension does (the shape of the problem)
 
-Two user-facing commands, both reached by right-clicking in Live:
+One user-facing command, reached by right-clicking an arrangement selection in Live:
 
-1. **Render Video…** — export a clip/track/arrangement selection to a music-locked MP4
-   (a "pulse-waveform" style visualization driven by the actual notes/tempo).
-2. **Create Feedback Video from Selection…** — send a structured summary of the selection
-   to Claude, get a production review back, have Claude **author a HyperFrames composition**
-   visualizing that review, lint-fix it, render it, and import the MP4 into the Live set.
+- **Create Feedback Video from Selection…** — send a structured summary of the selection
+  to Claude, get a production review back, have Claude **author a HyperFrames composition**
+  visualizing that review, lint-fix it, render it, and import the MP4 into the Live set.
 
-Plus a utility command, **Manage API Keys…**, for storing/updating the two API keys.
+Plus a utility command, **Manage API Keys…**, for storing/updating the two API keys
+(Anthropic for the review + authoring, HeyGen for HyperFrames Cloud rendering).
 
 The whole thing is a **run-once command model**: one right-click → one self-contained
 session → one rendered video. There is no long-lived UI server, no background process.
@@ -39,46 +38,43 @@ session → one rendered video. There is no long-lived UI server, no background 
                                    ▼
         ┌───────────────────────── src/main.ts ─────────────────────────┐
         │  activate(): registers commands + context-menu actions          │
-        │  session handlers: runStudioSession / runFeedbackSession        │
-        │  UI dialogs (data: URLs), key prompts, progress, done/error     │
-        └───────┬───────────────┬───────────────┬───────────────┬────────┘
-                │               │               │               │
-                ▼               ▼               ▼               ▼
-        liveAdapter.ts     exporter.ts      feedback.ts     composer.ts
-        (ONLY SDK caller)  (Timeline)       (Claude review) (Claude authors comp)
-                │               │               │               │
-                │               ▼               │               ▼
-                │           timebridge.ts        │           render.ts ──▶ HyperFrames
-                │           (beats↔seconds)       │           (local CLI or Cloud API)
-                ▼                                 ▼
-        @ableton-extensions/sdk            @anthropic-ai/sdk
+        │  runFeedbackSession(); UI dialogs (data: URLs), key prompts,     │
+        │  progress, done/error                                           │
+        └───────┬───────────────────────┬───────────────┬───────────────┘
+                │                       │               │
+                ▼                       ▼               ▼
+        liveAdapter.ts             feedback.ts     composer.ts
+        (ONLY SDK caller)          (Claude review) (Claude authors comp)
+                │                       │               │
+                │                       │               ▼
+                │                       │           render.ts ──▶ HyperFrames
+                │                       │           (local CLI or Cloud API)
+                ▼                       ▼
+        @ableton-extensions/sdk   @anthropic-ai/sdk
 ```
 
 **The iron rule: only `liveAdapter.ts` imports the Ableton SDK.** Everything else takes
 plain data. `main.ts` receives the context-menu argument as `unknown` and passes it straight
 to `liveAdapter.getSelection()`. This keeps the SDK surface (which is beta and quirky —
-see §7) quarantined in one auditable file, and lets you unit-test the exporter/composer by
-mocking `liveAdapter`.
+see §7) quarantined in one auditable file, and lets you unit-test the composer by mocking
+`liveAdapter`.
 
 ### File map
 
 | File | Responsibility |
 |---|---|
-| `src/main.ts` | Entry point; `activate()`; command registration; session orchestration; all dialogs. |
-| `src/liveAdapter.ts` | **The only SDK caller.** Selection resolution, data readers, UI (dialogs/progress), file delivery. |
-| `src/exporter.ts` | Assembles the `Timeline` data contract from adapter reads. No SDK, no rendering. |
-| `src/timebridge.ts` | Deterministic beats↔seconds↔frames mapping (ramp-aware). Compiles for Node **and** browser. |
-| `src/render.ts` | Stages the bundle; `renderLocal` (dev) and `renderCloud` (shipped); the HyperFrames Cloud HTTP flow. |
+| `src/main.ts` | Entry point; `activate()`; command registration; the feedback session; all dialogs. |
+| `src/liveAdapter.ts` | **The only SDK caller.** Selection resolution, the project summary, UI (dialogs/progress), file delivery. |
 | `src/feedback.ts` | Calls Claude for the review (structured JSON output); API-key persistence helpers. |
 | `src/composer.ts` | Claude **authors** a HyperFrames composition, then `hyperframes lint`→fix loop. |
+| `src/render.ts` | Stages the bundle; `renderCloud` (shipped) + `renderLocal` (dev); the HyperFrames Cloud HTTP flow. |
 | `src/feedbackTypes.ts` | `ProjectSummary`, `FeedbackReport`, and the JSON Schema for structured output. |
-| `src/types.ts` | The `Timeline` contract and related interfaces. |
+| `src/types.ts` | The minimal `Timeline` the renderer reads (duration/size/fps). |
 | `src/polyfill.ts` / `src/webglobals.ts` | Install Web globals the host strips (fetch family, Event/AbortController, etc.). |
-| `src/templateAssets.generated.ts` | **Auto-generated.** Template + panel HTML inlined as strings (sandbox workaround). |
-| `templates/*` | The HyperFrames compositions (HTML) and their manifests. |
-| `panel/index.html` | The "studio" dialog HTML for the Render Video flow. |
+| `src/templateAssets.generated.ts` | **Auto-generated.** The fallback template + bundled GSAP inlined as strings (sandbox workaround). |
+| `templates/project-feedback/` | The fixed fallback composition (used only if Claude's authored one can't be made lint-clean). |
 | `tools/build-extension.mjs` | esbuild build with the polyfill banner + asset generation. |
-| `tools/gen-template-assets.mjs` | Reads template/panel files → writes `templateAssets.generated.ts`. |
+| `tools/gen-template-assets.mjs` | Reads template files → writes `templateAssets.generated.ts`. |
 | `tools/load-check.cjs` | Offline load test simulating the host's stripped-globals context. |
 | `manifest.json` | Extension manifest (name, entry, versions). |
 
@@ -208,17 +204,15 @@ round-trip needed to catch a missing one. Run it after every build.
 ```
 npm run build:ext   → node tools/build-extension.mjs
 ```
-1. `execFileSync('node', ['tools/gen-template-assets.mjs'])` — reads every file listed in
-   `gen-template-assets.mjs`'s `STYLES` map plus `panel/index.html` and `gsap.min.js`, and
-   writes `src/templateAssets.generated.ts` exporting:
-   - `TEMPLATE_ASSETS: Record<style, Record<filename, contents>>`
-   - `STUDIO_HTML: string` (the panel HTML)
+1. `execFileSync('node', ['tools/gen-template-assets.mjs'])` — reads the fallback template's
+   files and `gsap.min.js`, and writes `src/templateAssets.generated.ts` exporting:
+   - `TEMPLATE_ASSETS: Record<style, Record<filename, contents>>` (the fallback composition)
    - `GSAP_MIN: string` (bundled GSAP for authored compositions)
 2. esbuild bundles `src/main.ts` → `dist/extension.js`:
    - `format: 'cjs'`, `platform: 'node'`, `bundle: true` (the Ableton SDK and all deps are
      inlined), `banner` = the polyfill IIFE, `minify` in `--production`.
 
-`package:ext` runs the production build, strips fixtures, then `extensions-cli package`.
+`package:ext` runs the production build, then `extensions-cli package`.
 
 **Why inline the templates?** Because of the filesystem sandbox (§3): the extension cannot
 read its own install dir at runtime. So all HTML/JS assets are baked into the bundle as
@@ -252,28 +246,28 @@ Available scopes: `MidiClip`, `AudioClip`, `ClipSlot`, `ClipSlotSelection`, `Mid
 There is no "whole application" menu — every action hangs off an object. To get a
 "whole project" gesture, register on `*.ArrangementSelection` and let the user select across
 all tracks (select-all = whole song). This extension uses:
-- `CLIP_SCOPES` (clip/track/arrangement) for **Render Video**.
 - `PROJECT_SCOPES` (`*.ArrangementSelection` only) for **Feedback**, so it never appears on a
   single clip.
-- The union for **Manage API Keys** so it's reachable from any right-click.
+- The full scope list for **Manage API Keys** so it's reachable from any right-click.
 
 ### Resolving the target → `SelectionContext`
 `getSelection(targetArg: unknown)` branches on the runtime shape:
-- **ArrangementSelection** (`'selected_lanes' in x`): `time_selection_start/end` (beats) and
-  `selected_lanes` handles → resolve each to a `Track` via `ctx.getObjectFromHandle(h, Track)`.
-- **ClipSlotSelection** (`'selected_clip_slots' in x`): first slot holding a clip.
-- Otherwise a **Handle**: `ctx.getObjectFromHandle(arg, DataModelObject)` then `instanceof`
-  checks (`Clip` → clip; `ClipSlot` → its clip; `Track` → arrangement span of its clips).
+The feedback command fires on `*.ArrangementSelection` scopes, so the argument is an
+**ArrangementSelection** (`'selected_lanes' in x`): `time_selection_start/end` (beats) and
+`selected_lanes` handles → resolve each to a `Track` via `ctx.getObjectFromHandle(h, Track)`.
 
 `ctx.getObjectFromHandle(handle, Class)` is the core "rehydrate a live object from an opaque
 handle" call. You pass the class you expect; you get a typed live object whose properties
 re-read from the Set.
 
-### Data readers
-`getNotes`, `getTempoMap`, `getTimeSignatures`, `getMarkers`, `getTracks`, `getProjectSummary`.
-Known SDK gaps (documented at the top of the file) that shape these:
-- **No automation/envelope API** → `getAutomation()` returns `{}`.
-- **Static tempo only** → one-point tempo map from `song.tempo`.
+### The one reader: `getProjectSummary`
+The feedback feature needs a compact, LLM-friendly description of the selection, not raw
+data. `getProjectSummary(sel)` walks the selected tracks over the selected time window and
+returns, per track: name, kind (midi/audio), color, in-range note count, device names, and a
+coarse note density — plus the tempo, cue-point sections, total notes, and pitch range. No
+raw notes, no audio. Known SDK gaps that shape it:
+- **No automation/envelope API** → nothing to read there.
+- **Static tempo only** → `song.tempo` is a single value.
 - **No song-level time signature** → hardcoded `4/4`.
 - **No track color** → colors are read from **clips** instead.
 
@@ -288,8 +282,7 @@ function num(v: number | bigint | undefined, fallback = 0): number {
   return v === undefined ? fallback : Number(v);
 }
 ```
-Do this **at the boundary**, before any math or serialization. `colorToHex` and
-`clampVelocity` are built on `num`.
+Do this **at the boundary**, before any math or serialization. `colorToHex` is built on `num`.
 
 ### Environment, UI, delivery
 - `storageDirectory()` / `tempDirectory()` → `ctx.environment.*` (the only writable dirs).
@@ -305,28 +298,18 @@ Do this **at the boundary**, before any math or serialization. `colorToHex` and
 
 ---
 
-## 8. The data contract (`Timeline`) and the exporter
+## 8. What the renderer needs: a minimal `Timeline`
 
-`exporter.ts` is pure orchestration (no SDK, no render). It fans out the adapter reads with
-`Promise.all`, bounces audio, computes duration via `TimeBridge`, assembles a `Timeline`, and
-writes `timeline.json` + `audio.wav` into a fresh work dir.
-
-`Timeline` (see `types.ts`) is the single source of truth passed to the renderer:
+The feedback composition isn't music-synced — it presents a review — so it doesn't need the
+Set's notes or audio on the render side. All the renderer wants is a small `Timeline`
+(`types.ts`) carrying the video spec and duration:
 ```
-formatVersion, meta{title,clipColor,exportedAt,sourceScope,…},
-timing{durationBeats, tempoMap[], timeSignatures[]},
-audio{file, durationSeconds, offsetBeats},
-notes[], automation{}, markers[], tracks[],
-video{width, height, fps, style, mappings}
+meta{title, …}, video{width, height, fps, style}, audio{durationSeconds}
 ```
-
-### TimeBridge — deterministic time mapping
-The renderer is seeked by **time in seconds**, but musical data is in **beats**. `TimeBridge`
-converts between beats↔seconds↔frames, ramp-aware across a tempo map, with the anchor
-`beat 0 === second 0 === frame 0 === start of the exported region`. It compiles for both Node
-(the exporter) and the browser (the pulse template bundles it as `timebridge.browser.js` via a
-separate esbuild IIFE build). A subtle fixed bug: `segmentAt` must return the **last** tempo
-point past the final anchor, or tempo after the last point is wrong.
+`main.ts`'s `feedbackTimeline(title, durationSeconds)` builds one directly — the duration is
+just how long the composition should run. The *content* of the review flows separately: as the
+structured `FeedbackReport` (§11), which Claude either bakes into the authored composition or,
+in the fallback path, we inject as a `window.FEEDBACK` global.
 
 ---
 
@@ -426,7 +409,8 @@ The authored composition is rendered via the `prestaged` path (§9): the work di
 ## 12. HyperFrames composition conventions (what the renderer requires)
 
 The renderer **seeks the composition frame-by-frame**; every frame must be reproducible from
-its time value alone. Two valid animation drivers, and the choice matters:
+its time value alone. The feedback composition is DOM (text/cards), so it uses the GSAP-timeline
+driver below. (Canvas compositions have a second driver — the `hf-seek` event — noted at the end.)
 
 ### DOM composition → a real, paused GSAP timeline
 ```html
@@ -450,13 +434,12 @@ its time value alone. Two valid animation drivers, and the choice matters:
   (`class="clip"` + `data-start` + `data-duration` + `data-track-index`); build the visible
   end-state in static HTML/CSS then animate from/to it.
 
-### Canvas composition → the `hf-seek` event (what `pulse-waveform` uses)
-```js
-window.__timelines['main'] = { /* stub with the methods the seek helper probes */ };
-window.addEventListener('hf-seek', (e) => renderFrame(e.detail.time)); // time in SECONDS
-```
-- `pulse-waveform` draws to a `<canvas>` and is driven purely by `hf-seek` (`detail.time` is
-  seconds). It bundles `TimeBridge` in the browser to map seconds→beats and draw notes.
+### Canvas compositions use a different driver (for reference)
+A `<canvas>` composition isn't seeked through GSAP — the renderer dispatches an `hf-seek`
+window event each frame (`e.detail.time` in seconds) and you draw from that. The feedback
+extension is DOM-only, so it doesn't use this path, but it's the reason the "frozen render"
+lesson above exists: a DOM comp that listens for `hf-seek` (instead of registering a GSAP
+timeline) never animates, because the renderer only fires `hf-seek` for canvas comps.
 
 ### Determinism bans (lint won't catch all of these)
 No `Date.now`/`performance.now`/any render clock; no unseeded `Math.random`; no network
