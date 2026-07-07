@@ -19,8 +19,7 @@ whole loop (SDK read → Timeline → composition → render → import) so you 
 
 ## Docs
 
-- **[Building Ableton × HyperFrames extensions](docs/building-ableton-hyperframes-extensions.html)** — a complete, from-scratch build guide (open in a browser): reading the Extensions SDK, wiring both render modes, and connecting the Anthropic + HyperFrames Cloud APIs. Every speed bump and SDK limitation included.
-- **[BUILDING-HYPERFRAMES-EXTENSIONS.md](docs/BUILDING-HYPERFRAMES-EXTENSIONS.md)** — the same material as a technical reference/template for new extensions.
+- **[BUILDING-HYPERFRAMES-EXTENSIONS.md](docs/BUILDING-HYPERFRAMES-EXTENSIONS.md)** — a complete technical guide and template for building a HyperFrames extension: reading the Extensions SDK, wiring both render modes, and connecting the Anthropic + HyperFrames Cloud APIs. Every speed bump and SDK limitation included.
 
 ## How it works, in one diagram
 

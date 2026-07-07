@@ -6,7 +6,7 @@ rendered and imported back into your Set.
 
 It's a scaffold, not a product — ~10 small, commented files that demonstrate the whole loop so you
 don't start from a blank folder. For the full story (both render modes, the AI "feedback video",
-and every wall we hit), see the [build guide](../docs/building-ableton-hyperframes-extensions.html)
+and every wall we hit), see the [build guide](../docs/BUILDING-HYPERFRAMES-EXTENSIONS.md)
 and the complete [`hyperframes-feedback`](../hyperframes-feedback/) extension.
 
 ## The recipe
@@ -49,7 +49,7 @@ export HEYGEN_API_KEY=hg_...        # or write it to <storageDir>/heygen-key
 ```
 
 `render()` uses cloud when a key is present, local otherwise. Why this is necessary is the crux of
-the [build guide](../docs/building-ableton-hyperframes-extensions.html).
+the [build guide](../docs/BUILDING-HYPERFRAMES-EXTENSIONS.md).
 
 ## File map
 
