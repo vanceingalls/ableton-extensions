@@ -14,8 +14,8 @@
     "run:ext": "npm run build:ext && extensions-cli run"
   },
   "devDependencies": {
-    "@ableton-extensions/cli": "file:../extensions-sdk-1.0.0-beta.0/ableton-extensions-cli-1.0.0-beta.0.tgz",
-    "@ableton-extensions/sdk": "file:../extensions-sdk-1.0.0-beta.0/ableton-extensions-sdk-1.0.0-beta.0.tgz",
+    "@ableton-extensions/cli": "file:../../extensions-sdk-1.0.0-beta.0/ableton-extensions-cli-1.0.0-beta.0.tgz",
+    "@ableton-extensions/sdk": "file:../../extensions-sdk-1.0.0-beta.0/ableton-extensions-sdk-1.0.0-beta.0.tgz",
     "@types/node": "^24.0.0",
     "ajv": "^8.17.0",
     "ajv-formats": "^3.0.1",

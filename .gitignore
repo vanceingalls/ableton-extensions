@@ -1,7 +1,21 @@
+# dependencies & build output (any extension subfolder)
 node_modules/
 dist/
+*.ablx
+
+# rendered/exported media
 *.mp4
-templates/*/timeline.json
-templates/*/audio.wav
-research/*.txt
-dist/
+*.wav
+
+# per-extension render fixtures (staged into templates at build time)
+**/templates/*/timeline.json
+**/templates/*/timeline.js
+**/templates/*/audio.wav
+**/templates/*/meta.json
+
+# local machine config & logs
+.env
+**/research/*.txt
+
+# macOS
+.DS_Store
