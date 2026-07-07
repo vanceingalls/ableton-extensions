@@ -1,21 +1,17 @@
 /**
  * main.ts — HyperFrames Feedback Extension entry point.
  *
- * Run-once command model: the user right-clicks a clip/track → "Render Video…"
- * or an arrangement selection → "Create Feedback Video from Selection…". We
- * resolve the selection, gather data, open a modal dialog, and render (locally
- * in dev, or HyperFrames Cloud with a key). One invocation = one session.
- *
- * ⚠️ SDK: registration below follows the confirmed canonical pattern
- * (initialize / registerContextMenuAction / getObjectFromHandle) but the
- * exact signatures must be checked against the SDK TypeDoc in Milestone 0.
- * All SDK calls are quarantined in liveAdapter.ts — never import it here.
+ * Run-once command model: the user selects an arrangement range across tracks →
+ * right-click → "Create Feedback Video from Selection…". We summarize the
+ * selection, ask Claude for a production review, have Claude author a HyperFrames
+ * composition of that review, render it (HyperFrames Cloud with a key, or locally
+ * on the dev host), and import the MP4 back into the Set. One invocation = one
+ * session. All SDK calls are quarantined in liveAdapter.ts.
  */
 
 import './polyfill'; // MUST be first: installs fetch/Headers globals before the SDK loads
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { exportSelection } from './exporter';
 import { renderCloud, renderLocal, type RenderJob } from './render';
 import {
   generateFeedback,
@@ -27,37 +23,19 @@ import {
   keyStatus,
 } from './feedback';
 import { authorFeedbackComposition } from './composer';
-import { type StyleInfo } from './studioProtocol';
-import type { RenderRequest, Timeline } from './types';
+import type { Timeline } from './types';
 import type { FeedbackReport } from './feedbackTypes';
-import { TEMPLATE_ASSETS, STUDIO_HTML } from './templateAssets.generated';
 import * as live from './liveAdapter';
 
 const TEMPLATES_DIR = path.join(__dirname, '..', 'templates');
-
-/** Studio opens with these until the user changes them. */
-const DEFAULT_REQUEST: RenderRequest = {
-  aspect: '9:16',
-  fps: 30,
-  style: 'pulse-waveform',
-  mappings: [],
-};
 
 export async function activate(activation: unknown): Promise<void> {
   console.log('activate: entered');
   try {
     live.bindActivation(activation);
     console.log('activate: SDK initialized');
-    // Registers the command + context-menu action on all six scopes that map
-    // to our clip/track/arrangement model (see liveAdapter.registerStudioAction).
-    await live.registerStudioAction(
-      'Render Video…',
-      'hyperframesFeedback.openStudio',
-      (targetArg) => {
-        console.log('command invoked, target:', JSON.stringify(targetArg, (_k, v) => (typeof v === 'bigint' ? String(v) : v)));
-        void runStudioSession(targetArg).catch((e) => console.error('studio session failed:', e));
-      },
-    );
+    // Feedback runs on an arrangement time-selection — select across all tracks
+    // for the whole project, or a range for a section.
     await live.registerStudioAction(
       'Create Feedback Video from Selection…',
       'hyperframesFeedback.feedbackVideo',
@@ -65,7 +43,7 @@ export async function activate(activation: unknown): Promise<void> {
         console.log('feedback command invoked');
         void runFeedbackSession(targetArg).catch((e) => console.error('feedback session failed:', e));
       },
-      live.PROJECT_SCOPES, // arrangement time-selection — select all for the whole project
+      live.PROJECT_SCOPES,
     );
     await live.registerStudioAction(
       'HyperFrames: Manage API Keys…',
@@ -76,109 +54,10 @@ export async function activate(activation: unknown): Promise<void> {
       },
       [...live.CLIP_SCOPES, ...live.PROJECT_SCOPES], // reachable from any right-click
     );
-    console.log('activate: context-menu actions registered on all scopes');
+    console.log('activate: context-menu actions registered');
   } catch (e) {
     console.error('activate FAILED:', e);
     throw e;
-  }
-}
-
-interface StudioResult {
-  action: 'render' | 'cancel';
-  style?: string;
-  aspect?: RenderRequest['aspect'];
-  fps?: RenderRequest['fps'];
-}
-
-/**
- * One right-click → one studio session → done.
- *
- * The dialog is a self-contained data: URL (the SDK's proven path — an
- * http://localhost page does not load in the WebView). We inject the exported
- * timeline into the studio HTML, show it, and get the render request back via
- * the dialog's close_and_send payload. Live's live-preview refresh loop (§7)
- * is M3 and will need the server transport; M1 is one request/response.
- */
-async function runStudioSession(targetHandle: unknown): Promise<void> {
-  const sel = await live.getSelection(targetHandle);
-  console.log(`selection: ${sel.scope} "${sel.clipName}" ${sel.durationBeats} beats, midi=${sel.isMidi}`);
-  const exported = await exportSelection(sel, { ...DEFAULT_REQUEST, outputDir: freshWorkDir('render') });
-  console.log(`exported ${exported.timeline.notes.length} notes; audio: ${exported.audioPath ?? 'UNAVAILABLE (silent render)'}`);
-  const styles = await loadStyles();
-
-  const dataUrl = await buildStudioDataUrl(exported.timeline, styles, !!exported.audioPath);
-  const payload = await live.showStudioDialog(dataUrl, 620, 380);
-  console.log('studio closed, payload:', payload);
-
-  let choice: StudioResult;
-  try {
-    choice = JSON.parse(payload) as StudioResult;
-  } catch {
-    return; // dialog dismissed without a decision
-  }
-  if (choice.action !== 'render') return;
-
-  await handleRender(sel, {
-    aspect: choice.aspect ?? DEFAULT_REQUEST.aspect,
-    fps: choice.fps ?? DEFAULT_REQUEST.fps,
-    style: choice.style ?? DEFAULT_REQUEST.style,
-    mappings: [],
-    useCloud: true,
-    outputDir: freshWorkDir('render'),
-  });
-}
-
-/** Read the studio HTML, inject the session data, return a data: URL. */
-async function buildStudioDataUrl(
-  timeline: Timeline,
-  availableStyles: StyleInfo[],
-  audioAvailable: boolean,
-): Promise<string> {
-  const injected = STUDIO_HTML.replace(
-    'null /*__STUDIO_DATA__*/',
-    JSON.stringify({ timeline, availableStyles, audioAvailable }),
-  );
-  return 'data:text/html,' + encodeURIComponent(injected);
-}
-
-async function handleRender(sel: live.SelectionContext, req: RenderRequest): Promise<void> {
-  const result = await exportSelection(sel, req);
-  await runRenderJob(
-    {
-      workDir: result.workDir,
-      templateDir: path.join(TEMPLATES_DIR, req.style),
-      timeline: result.timeline,
-    },
-    'Rendering with HyperFrames…',
-  );
-}
-
-/**
- * Shared render tail. Live's managed host sandboxes Node child processes, so
- * local render (npx/hyperframes is Node) can't run there — the shipped path is
- * HyperFrames Cloud (network POST, no child Node). Resolve a HeyGen key (env /
- * stored / prompt); with a key → cloud; without → local (works only on the
- * un-sandboxed dev host). Imports the MP4 and shows the done/error dialog.
- */
-async function runRenderJob(job: RenderJob, progressText: string): Promise<void> {
-  let apiKey = await resolveHeyGenKey(live.storageDirectory());
-  if (!apiKey) apiKey = await promptForHeyGenKey();
-  try {
-    const mp4 = await live.withProgress(progressText, (report, signal) =>
-      apiKey
-        ? renderCloud(job, apiKey!, (phase, pct) => report(pct, phase), signal)
-        : (report(undefined, 'Rendering locally…'), renderLocal(job)),
-    );
-    const delivered = await live.deliverIntoProject(mp4);
-    console.log('render delivered:', delivered);
-    const action = await live.showStudioDialog(doneDialogUrl(delivered), 560, 260).catch(() => 'ok');
-    if (action === 'reveal') await live.revealFile(delivered);
-    else if (action === 'open') await live.openFile(delivered);
-  } catch (err) {
-    console.error('render failed:', (err as Error)?.message ?? err);
-    await live
-      .showStudioDialog(errorDialogUrl(String((err as Error)?.message ?? err)), 520, 240)
-      .catch(() => {});
   }
 }
 
@@ -278,6 +157,35 @@ function feedbackTimeline(title: string, durationSeconds: number): Timeline {
     markers: [],
     video: { width: 1080, height: 1920, fps: 30, style: 'project-feedback' },
   };
+}
+
+/**
+ * Shared render tail. Live's managed host sandboxes Node child processes, so
+ * local render (npx/hyperframes is Node) can't run there — the shipped path is
+ * HyperFrames Cloud (network POST, no child Node). Resolve a HeyGen key (env /
+ * stored / prompt); with a key → cloud; without → local (works only on the
+ * un-sandboxed dev host). Imports the MP4 and shows the done/error dialog.
+ */
+async function runRenderJob(job: RenderJob, progressText: string): Promise<void> {
+  let apiKey = await resolveHeyGenKey(live.storageDirectory());
+  if (!apiKey) apiKey = await promptForHeyGenKey();
+  try {
+    const mp4 = await live.withProgress(progressText, (report, signal) =>
+      apiKey
+        ? renderCloud(job, apiKey!, (phase, pct) => report(pct, phase), signal)
+        : (report(undefined, 'Rendering locally…'), renderLocal(job)),
+    );
+    const delivered = await live.deliverIntoProject(mp4);
+    console.log('render delivered:', delivered);
+    const action = await live.showStudioDialog(doneDialogUrl(delivered), 560, 260).catch(() => 'ok');
+    if (action === 'reveal') await live.revealFile(delivered);
+    else if (action === 'open') await live.openFile(delivered);
+  } catch (err) {
+    console.error('render failed:', (err as Error)?.message ?? err);
+    await live
+      .showStudioDialog(errorDialogUrl(String((err as Error)?.message ?? err)), 520, 240)
+      .catch(() => {});
+  }
 }
 
 /** Ask the user to paste an Anthropic API key; store it for next time. */
@@ -418,11 +326,6 @@ function workBase(): string {
   return live.tempDirectory() ?? process.env.TMPDIR ?? '/tmp';
 }
 
-/** A fresh, sandbox-safe work directory path (not yet created). */
-function freshWorkDir(kind: string): string {
-  return path.join(workBase(), `${kind}-${Date.now()}`);
-}
-
 function doneDialogUrl(deliveredPath: string): string {
   const send = (r: string) =>
     `(window.webkit?.messageHandlers?.live||window.chrome?.webview).postMessage({method:'close_and_send',params:['${r}']})`;
@@ -461,20 +364,3 @@ function infoDialogUrl(heading: string, message: string): string {
 function escapeHtml(s: string): string {
   return s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c] as string);
 }
-
-/** Available styles, from the inlined template manifests (NOT read from the
- *  extension dir — the sandbox forbids that). */
-async function loadStyles(): Promise<StyleInfo[]> {
-  const styles: StyleInfo[] = [];
-  for (const [id, files] of Object.entries(TEMPLATE_ASSETS)) {
-    const json = files['template.json'];
-    if (!json) continue;
-    try {
-      styles.push({ id, manifest: JSON.parse(json) });
-    } catch {
-      /* malformed manifest → skip */
-    }
-  }
-  return styles;
-}
-

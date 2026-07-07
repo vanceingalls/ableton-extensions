@@ -1,88 +1,67 @@
-# HyperFrames Feedback — HyperFrames inside Ableton Live
+# HyperFrames Feedback — an AI project review, as a video, inside Ableton Live
 
-Right-click a clip or track → **Render Video…**, or an arrangement selection →
-**Create Feedback Video from Selection…** (an AI review of what you selected).
-Renders build from your Set's own notes, tempo, colors, and structure into a
-deterministic MP4 whose visuals are frame-locked to the music, because timing
-comes from the Set
-itself (tempo, MIDI, automation, markers), not from audio analysis.
+Select a range across your tracks in Arrangement view → right-click → **Create
+Feedback Video from Selection…**. Claude reviews what you selected, *designs* a
+HyperFrames composition presenting that review, and the rendered MP4 is imported
+straight back into your Set. Select all tracks for a whole-project review, or a
+range for one section.
 
 ```
 Ableton Live (Extension, TS/Node, run-once command)
-  reads tempo map, notes, automation, markers → timeline.json
-  bounces the selection                       → audio.wav
-        │ modal studio dialog (preview, mappings, refresh-from-Set)
-        ▼
-HyperFrames Cloud (local CLI for template dev)
-  template (HTML/canvas) + timeline.json + audio.wav
-  virtual clock seeks; every pixel is a pure function of time
+  summarize the selection (tracks, note counts, devices, register, sections)
         │
         ▼
-output.mp4 — note-accurate by construction
+Anthropic — Claude reviews the project → structured JSON (score + points)
+  Claude authors a HyperFrames composition of the review → lint → fix → repeat
+        │
+        ▼
+HyperFrames Cloud (HeyGen) renders the composition → MP4
+        │
+        ▼
+imported back into the Live Set
 ```
 
-**Continuing this work?** Read `AGENT_INSTRUCTIONS.md` (the spec) first, then
-`PLAN.md` (current state + next steps). `DECISIONS.md` is the decision log.
+Two API keys are needed and are entered in Live (stored locally, never in the
+repo): **Anthropic** (the review + authoring) and **HeyGen** (HyperFrames Cloud
+rendering) — separate accounts, separate billing. Manage them any time via
+right-click → **HyperFrames: Manage API Keys…**.
 
-## Layout
+## File map
 
 | Path | What it is |
 | --- | --- |
-| `schema/timeline.schema.json` | **The contract.** Full JSON Schema for the exported timeline. |
-| `src/types.ts` | TS types mirroring the schema. |
-| `src/timebridge.ts` | **The one time-conversion module** (beats↔seconds↔frames, warp markers). |
-| `src/liveAdapter.ts` | The ONLY file that touches the Extensions SDK (incl. dialogs). Placeholders live here. |
-| `src/exporter.ts` | Assembles `timeline.json` from the adapter via TimeBridge. |
-| `src/studioProtocol.ts` | Versioned Node ↔ WebView message types for the studio dialog. |
-| `src/render.ts` | HyperFrames invocation: cloud (shipped) + local CLI (template dev). |
-| `src/main.ts` | Extension entry: context menu → run-once studio session → cloud render. |
-| `panel/index.html` | Old prototype panel — becomes the studio dialog in M3 (see PLAN.md). |
-| `templates/pulse-waveform/` | Working template (`index.html` + `template.json` manifest + TimeBridge bundle). |
-| `examples/timeline.example.json` | Sample data — develop templates without Live. |
-| `test/` | Vitest suites: TimeBridge math + exporter/schema validation. |
-| `PLAN.md`, `DECISIONS.md` | Continuation plan; decision log + open VERIFY items. |
+| `src/main.ts` | Extension entry: `activate()`, the feedback session, the key dialogs. |
+| `src/liveAdapter.ts` | **The only file that touches the Extensions SDK.** Selection + project summary, `num()` BigInt coercion, host services. |
+| `src/feedback.ts` | Anthropic call: the review as validated JSON (structured output). Key persistence. |
+| `src/composer.ts` | Claude authors the HyperFrames composition, then `hyperframes lint` → fix loop. |
+| `src/render.ts` | HyperFrames Cloud upload/submit/poll/download; local render for the dev host. |
+| `src/feedbackTypes.ts` | `ProjectSummary`, `FeedbackReport`, and the JSON Schema for structured output. |
+| `src/polyfill.ts` · `src/webglobals.ts` | Restore the web globals Live's host strips (imported first). |
+| `templates/project-feedback/` | The fixed fallback composition (used only if Claude's authored one can't be made lint-clean). |
+| `tools/build-extension.mjs` | esbuild bundle + polyfill banner; inlines templates via `gen-template-assets.mjs`. |
+| `tools/load-check.cjs` | Offline "does it load under the stripped-globals host?" check. |
+| `DECISIONS.md` | Decision log. |
 
-## Develop without Live
+## Build & run
 
 ```bash
-# Node is user-local on this machine:
-export PATH="$HOME/.local/node/node-v24.18.0-darwin-arm64/bin:$PATH"
+export PATH="$HOME/.local/node/node-v24.18.0-darwin-arm64/bin:$PATH"  # if Node is user-local
 
-npm test                      # TimeBridge + exporter/schema suites
+npm install            # needs the Ableton SDK tarballs (see the repo README)
 npm run typecheck
-npm run build:template-lib    # rebuild templates/*/timebridge.browser.js
-                              # REQUIRED after any src/timebridge.ts change
-
-# Template preview in a normal browser (WebAudio-clocked, click to play):
-cd templates/pulse-waveform
-node ../../tools/make-fixture.mjs .   # matched audio.wav + timeline.json (124 BPM kicks)
-npx serve .
-
-# Full local render (needs Chrome + ffmpeg/ffprobe; static builds live in ~/.local/bin):
-# stage a work dir with timeline.json + audio.wav, then renderLocal() drives
-# `npx hyperframes render` — see src/render.ts. Verified deterministic
-# (identical frame md5s across runs) on 2026-07-05.
+npm run build:ext      # bundle to dist/extension.js
+node tools/load-check.cjs   # offline load check (no Ableton needed)
+npm run package:ext    # produce dist/hyperframes-feedback.ablx to install in Live
+npm run run:ext        # or launch the dev host (Developer Mode ON in Live)
 ```
 
-The template's one rule: **every pixel is a pure function of time.** No rAF state,
-no accumulators, no `Math.random()` at draw time. That's what lets HyperFrames'
-virtual clock produce identical, note-accurate frames on every render.
+## Notes
 
-## What must be verified against the real APIs
-
-This code was written against the *announced* capabilities of both systems.
-The full list of open integration questions is the **VERIFY table in
-`DECISIONS.md`** (8 items: audio bounce scope, automation/tempo/warp read
-access, WebView engine, dialog modality, MP4 delivery path, and the
-HyperFrames Cloud API + template seek-hook convention — the template currently
-exposes `window.renderFrame(seconds)`). All SDK guesses are quarantined in
-`src/liveAdapter.ts`; both HyperFrames call sites are marked in `src/render.ts`.
-
-## Roadmap after MVP
-
-- `falling-notes` and `typography` templates (panel buttons already exist)
-- Tempo-ramp support in the template (mirror `exporter.beatsToSeconds`)
-- Track/arrangement scope: per-stem visuals using `tracks[]` + `trackId` on notes
-- HyperFrames Cloud path in `render.ts` for users without local Node tooling
-- Ship the timeline schema as a HyperFrames skill so coding agents can generate
-  custom templates from "make me a video for this clip, moody and glitchy"
+- **Rendering in a real install requires a HeyGen key.** Live's managed host
+  sandboxes Node child processes, so the local `hyperframes` CLI can't run there —
+  the shipped path is HyperFrames Cloud. Local render works only on the dev host.
+- **Authored compositions follow the HyperFrames conventions** (one paused GSAP
+  timeline on `window.__timelines['main']`, determinism rules) — see the build
+  guide in `../docs/BUILDING-HYPERFRAMES-EXTENSIONS.md`.
+- All SDK access is quarantined in `src/liveAdapter.ts`; integers are coerced
+  through `num()` because the bindings return BigInt where the types say number.

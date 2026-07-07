@@ -1,31 +1,25 @@
 # Ableton Extensions
 
-A collection of [Ableton Live 12](https://www.ableton.com/) Extensions that turn a Live Set into
-video using [HyperFrames](https://hyperframes.heygen.com). Each extension is a self-contained
-TypeScript/Node project; the shared engineering notes live in [`docs/`](docs/).
-
-## Start here
-
-New to this? [**`hyperframes-starter/`**](hyperframes-starter/) is a minimal, working scaffold —
-right-click a MIDI clip → render its notes to a music-locked video. ~10 commented files covering the
-whole loop (SDK read → Timeline → composition → render → import) so you don't begin from a blank folder.
+An [Ableton Live 12](https://www.ableton.com/) Extension that generates an AI **feedback video**
+with [HyperFrames](https://hyperframes.heygen.com): Claude reviews your project and *designs* a
+video presenting the review, rendered and imported back into your Set. The shared engineering
+notes live in [`docs/`](docs/).
 
 ## Extensions
 
 | Project | What it does |
 | --- | --- |
-| [`hyperframes-starter/`](hyperframes-starter/) | **Minimal starter template.** The smallest end-to-end integration: a clip's notes → a canvas HyperFrames composition → MP4 back in the Set. Copy it and build up. |
-| [`hyperframes-feedback/`](hyperframes-feedback/) | The full extension. Right-click a clip/track → **Render Video…** for a beat-accurate visualizer, or an arrangement selection → **Create Feedback Video from Selection…** where Claude reviews the project and *designs* the video presenting its review. Renders via HyperFrames Cloud and imports the MP4 back into the Set. |
+| [`hyperframes-feedback/`](hyperframes-feedback/) | Select an arrangement range across tracks → **Create Feedback Video from Selection…**. Claude reviews the selection, authors a HyperFrames composition of the review (lint-fixed until clean), renders it via HyperFrames Cloud, and imports the MP4 back into the Set. |
 
 ## Docs
 
-- **[BUILDING-HYPERFRAMES-EXTENSIONS.md](docs/BUILDING-HYPERFRAMES-EXTENSIONS.md)** — a complete technical guide and template for building a HyperFrames extension: reading the Extensions SDK, wiring both render modes, and connecting the Anthropic + HyperFrames Cloud APIs. Every speed bump and SDK limitation included.
+- **[BUILDING-HYPERFRAMES-EXTENSIONS.md](docs/BUILDING-HYPERFRAMES-EXTENSIONS.md)** — a complete technical guide and template for building a HyperFrames extension: reading the Extensions SDK, the AI feedback flow, and connecting the Anthropic + HyperFrames Cloud APIs. Every speed bump and SDK limitation included.
 
 ## How it works, in one diagram
 
 ```
-Ableton Live  ──▶  Extensions SDK  ──▶  Timeline JSON  ──▶  HyperFrames  ──▶  MP4 → Set
-  clips/notes       handles→objects      beats→seconds       canvas/GSAP       cloud render
+Ableton Live  ──▶  Extensions SDK  ──▶  Claude (review + author)  ──▶  HyperFrames  ──▶  MP4 → Set
+  selection         project summary      structured JSON + comp        cloud render
 ```
 
 ## Building an extension

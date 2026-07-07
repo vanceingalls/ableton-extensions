@@ -5,12 +5,10 @@
   "main": "dist/extension.js",
   "description": "Ableton Live Extension: render deterministic, music-locked MP4s and AI project reviews via HyperFrames",
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "vitest run --passWithNoTests",
     "typecheck": "tsc --noEmit",
-    "build:template-lib": "esbuild src/timebridge.ts --bundle --format=iife --global-name=TimeBridgeLib --outfile=templates/pulse-waveform/timebridge.browser.js",
     "build:ext": "node tools/build-extension.mjs",
-    "package:ext": "node tools/build-extension.mjs --production && rm -f templates/pulse-waveform/timeline.json templates/pulse-waveform/timeline.js templates/pulse-waveform/audio.wav templates/pulse-waveform/meta.json && extensions-cli package -o dist/hyperframes-feedback.ablx -i panel -i templates .",
+    "package:ext": "node tools/build-extension.mjs --production && extensions-cli package -o dist/hyperframes-feedback.ablx -i templates .",
     "run:ext": "npm run build:ext && extensions-cli run"
   },
   "devDependencies": {
